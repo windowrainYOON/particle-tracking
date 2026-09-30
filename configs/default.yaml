@@ -1,0 +1,70 @@
+channel:
+  cy5_keyword: Cy5
+  phrodo_keyword: pHrodo
+  ht_keyword: HT
+  frame_interval_min: 20.0
+detection:
+  sigma_bg: 25.0
+  sigma_smooth: 1.0
+  k_mad: 10.0
+  min_distance: 3
+  max_small: 3
+registration:
+  fl_ht_search: 8
+  ab_search: 3
+  fl_ht_min_corr: 0.5
+  ab_min_corr: 0.3
+cells:
+  open_radius: 5
+  smooth_sigma: 3.0
+  min_cell_area: 3000
+  id_overlap: 0.3
+  flow_attachment: 10.0
+footprint:
+  open_radius: 3
+  smooth_sigma: 2.0
+  k_sigma: 3.0
+  min_area: 1500
+  keep_large: 5000
+mitosis:
+  enabled: true
+  d_ri: 50.0
+  area_ratio: 0.75
+  abs_ri: 13580.0
+  max_ecc: 0.8
+tracking:
+  gate: 8.0
+  w_cell: 2.0
+  w_int: 2.0
+  w_area: 1.0
+  gap_closing: true
+  pattern_half: 15
+  pattern_search: 12
+  pattern_score_hi: 0.5
+  pattern_score_lo: 0.3
+  nb_radius: 25.0
+  nb_min: 2
+  w_nb: 0.5
+measurement:
+  ring_in: 3
+  ring_out: 8
+  min_ia: 5.0
+  min_track: 10
+  inside_fraction: 0.5
+risefall:
+  rise_x: 2.0
+  rise_delta: 0.01
+  floor: 0.005
+  drop_frac: 0.35
+  fall_frac: 0.5
+  rebound_frac: 0.6
+  rebound_raw_max: 0.15
+  min_post: 3
+  min_high_frames: 2
+  min_points: 8
+output:
+  make_movies: true
+  movie_fps: 3
+  make_figures: true
+  keep_cache: true
+  crop_half: 32

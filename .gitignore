@@ -1,0 +1,17 @@
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+.venv-*/
+
+# PyInstaller 빌드 결과 (build_mac_app.sh로 다시 만듦)
+build/
+dist/
+*.spec
+
+# macOS
+.DS_Store
+
+# 개인 분석 노트 (미발표 결과 포함)
+NOTES.md
