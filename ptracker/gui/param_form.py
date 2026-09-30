@@ -1,15 +1,20 @@
 """config.py의 dataclass 정의로부터 자동 생성되는 파라미터 편집기."""
 from __future__ import annotations
 from dataclasses import fields
+from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QFormLayout, QToolBox, QCheckBox, QSpinBox, QDoubleSpinBox,
                                QLineEdit, QComboBox, QScrollArea, QLabel)
 from ..config import Config, sections
 
 
 class ParamForm(QWidget):
+    changed = Signal(str)             # 값이 바뀐 섹션 이름
+    sectionChanged = Signal(str)      # 펼친 섹션 이름
+
     def __init__(self, cfg: Config | None = None, parent=None, only=None):
         super().__init__(parent)
         self._widgets = {}            # (section, name) -> widget
+        self._sections = []
         lay = QVBoxLayout(self); self.box = QToolBox(); lay.addWidget(self.box)
         cfg = cfg or Config()
         for sec, label, obj in sections(cfg):
@@ -19,9 +24,20 @@ class ParamForm(QWidget):
                 w = self._make_widget(f, getattr(obj, f.name))
                 lab = QLabel(f.metadata.get("label", f.name)); tip = f.metadata.get("help", "")
                 if tip: lab.setToolTip(tip); w.setToolTip(tip)
-                form.addRow(lab, w); self._widgets[(sec, f.name)] = w
+                form.addRow(lab, w); self._widgets[(sec, f.name)] = w; self._connect(w, sec)
             sc = QScrollArea(); sc.setWidgetResizable(True); sc.setWidget(page)
-            self.box.addItem(sc, label)
+            self.box.addItem(sc, label); self._sections.append(sec)
+        self.box.currentChanged.connect(lambda i: self.sectionChanged.emit(self.current_section()))
+
+    def _connect(self, w, sec):
+        emit = lambda *_: self.changed.emit(sec)
+        if isinstance(w, QCheckBox): w.toggled.connect(emit)
+        elif isinstance(w, (QSpinBox, QDoubleSpinBox)): w.valueChanged.connect(emit)
+        elif isinstance(w, QComboBox): w.currentTextChanged.connect(emit)
+        else: w.editingFinished.connect(emit)
+
+    def current_section(self) -> str:
+        i = self.box.currentIndex(); return self._sections[i] if 0 <= i < len(self._sections) else ""
 
     @staticmethod
     def _make_widget(f, value):

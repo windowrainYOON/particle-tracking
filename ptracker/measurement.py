@@ -7,23 +7,9 @@ from .config import MeasurementParams
 
 def measure_rois(tr, A, Bal, HT, LAB, reg, S, prm: MeasurementParams, progress=None):
     """ROI 평균 − 배경 고리 중앙값. HT는 ROI를 HT 좌표로 옮겨 평균/최대 RI."""
-    T, NF, NW = A.shape; NH, NHW = HT.shape[1:]
-    se_i = np.ones((2 * prm.ring_in + 1,) * 2, bool); se_o = np.ones((2 * prm.ring_out + 1,) * 2, bool); rec = {}
-    pad = prm.ring_out + 2
+    T = A.shape[0]; rec = {}
     for z in range(T):
-        lab = LAB[z]; occ = ndi.binary_dilation(lab > 0, iterations=2)
-        for k, sl in enumerate(ndi.find_objects(lab), 1):
-            if sl is None: continue
-            y0 = max(sl[0].start - pad, 0); y1 = min(sl[0].stop + pad, NF); x0 = max(sl[1].start - pad, 0); x1 = min(sl[1].stop + pad, NW)
-            m = lab[y0:y1, x0:x1] == k
-            ring = ndi.binary_dilation(m, se_o) & ~ndi.binary_dilation(m, se_i) & ~occ[y0:y1, x0:x1]
-            a = A[z, y0:y1, x0:x1].astype(float); b = Bal[z, y0:y1, x0:x1].astype(float); ok = ring.sum() > 10
-            yy, xx = np.nonzero(m)
-            hy = np.clip(np.round((yy + y0 + 0.5) * S - 0.5 + reg.dy_ht.values[z]).astype(int), 0, NH - 1)
-            hx = np.clip(np.round((xx + x0 + 0.5) * S - 0.5 + reg.dx_ht.values[z]).astype(int), 0, NHW - 1)
-            hv = HT[z, hy, hx].astype(float) / 10000
-            rec[(z + 1, k)] = (a[m].mean(), b[m].mean(), b[m].max(), np.median(a[ring]) if ok else np.nan,
-                               np.median(b[ring]) if ok else np.nan, hv.mean(), hv.max())
+        for k, v in measure_frame(LAB[z], A[z], Bal[z], HT[z], reg.dy_ht.values[z], reg.dx_ht.values[z], S, prm).items(): rec[(z + 1, k)] = v
         if progress: progress((z + 1) / T, f"ROI 측정 {z+1}/{T}")
     M = pd.DataFrame([(k[0], k[1], *v) for k, v in rec.items()],
                      columns=["frame", "label", "I_A_raw", "I_B_raw", "I_B_max", "bg_A", "bg_B", "HT_RI_mean", "HT_RI_max"])
@@ -32,6 +18,28 @@ def measure_rois(tr, A, Bal, HT, LAB, reg, S, prm: MeasurementParams, progress=N
     tr["ratio_BA"] = np.where(tr.I_A > prm.min_ia, tr.I_B / tr.I_A, np.nan)
     tr["ratio_BA_raw"] = tr.I_B_raw / tr.I_A_raw
     return tr
+
+
+def measure_frame(lab, a_img, b_img, ht, dy_ht, dx_ht, S, prm: MeasurementParams, labels=None, return_masks=False):
+    """한 프레임의 ROI별 (I_A_raw, I_B_raw, I_B_max, bg_A, bg_B, HT_RI_mean, HT_RI_max).
+    labels: 계산할 ROI 번호(없으면 전부). return_masks면 {label: (y0, x0, roi, ring)}도 반환 (미리보기용)."""
+    NF, NW = lab.shape; NH, NHW = ht.shape
+    se_i = np.ones((2 * prm.ring_in + 1,) * 2, bool); se_o = np.ones((2 * prm.ring_out + 1,) * 2, bool); rec = {}; masks = {}
+    pad = prm.ring_out + 2; occ = ndi.binary_dilation(lab > 0, iterations=2); want = None if labels is None else set(labels)
+    for k, sl in enumerate(ndi.find_objects(lab), 1):
+        if sl is None or (want is not None and k not in want): continue
+        y0 = max(sl[0].start - pad, 0); y1 = min(sl[0].stop + pad, NF); x0 = max(sl[1].start - pad, 0); x1 = min(sl[1].stop + pad, NW)
+        m = lab[y0:y1, x0:x1] == k
+        ring = ndi.binary_dilation(m, se_o) & ~ndi.binary_dilation(m, se_i) & ~occ[y0:y1, x0:x1]
+        a = a_img[y0:y1, x0:x1].astype(float); b = b_img[y0:y1, x0:x1].astype(float); ok = ring.sum() > 10
+        yy, xx = np.nonzero(m)
+        hy = np.clip(np.round((yy + y0 + 0.5) * S - 0.5 + dy_ht).astype(int), 0, NH - 1)
+        hx = np.clip(np.round((xx + x0 + 0.5) * S - 0.5 + dx_ht).astype(int), 0, NHW - 1)
+        hv = ht[hy, hx].astype(float) / 10000
+        rec[k] = (a[m].mean(), b[m].mean(), b[m].max(), np.median(a[ring]) if ok else np.nan,
+                  np.median(b[ring]) if ok else np.nan, hv.mean(), hv.max())
+        if return_masks: masks[k] = (y0, x0, m, ring)
+    return (rec, masks) if return_masks else rec
 
 
 def track_summary(tr, prm: MeasurementParams, CS, dt_min, exclude_mitotic=True):

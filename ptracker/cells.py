@@ -15,20 +15,29 @@ def cell_body_images(HT, prm: CellParams):
                      for h in HT]).astype(np.float32)
 
 
+def cell_thresholds(sample):
+    """세포 영역(triangle)·세포 중심(Otsu) threshold. sample = 세포 몸체 영상의 4프레임 간격 표본."""
+    return float(filters.threshold_triangle(sample.ravel())), float(filters.threshold_otsu(sample.ravel()))
+
+
+def segment_frame(img, low, core_thr, prm: CellParams):
+    """한 프레임 세포 몸체 영상 → 세포질 라벨 (ID 연결 전)."""
+    m = morphology.remove_small_objects(img > low, max_size=prm.min_cell_area)
+    m = ndi.binary_fill_holes(morphology.closing(m, morphology.disk(4)))
+    core = morphology.remove_small_objects(ndi.binary_erosion(img > core_thr, morphology.disk(3)), max_size=800)
+    lab = segmentation.watershed(-img, measure.label(core), mask=m)
+    rest = measure.label(m & (lab == 0)); rest[rest > 0] += lab.max()
+    rest = morphology.remove_small_objects(rest, max_size=prm.min_cell_area)
+    return lab + rest
+
+
 def segment_cells(cellimg, prm: CellParams, progress=None):
     """세포질 라벨 스택(프레임 간 ID 연결 포함)과 자동 threshold."""
     T = len(cellimg)
-    low = float(filters.threshold_triangle(cellimg[::4].ravel()))
-    core_thr = float(filters.threshold_otsu(cellimg[::4].ravel()))
+    low, core_thr = cell_thresholds(cellimg[::4])
     labs = []
     for z in range(T):
-        m = morphology.remove_small_objects(cellimg[z] > low, max_size=prm.min_cell_area)
-        m = ndi.binary_fill_holes(morphology.closing(m, morphology.disk(4)))
-        core = morphology.remove_small_objects(ndi.binary_erosion(cellimg[z] > core_thr, morphology.disk(3)), max_size=800)
-        lab = segmentation.watershed(-cellimg[z], measure.label(core), mask=m)
-        rest = measure.label(m & (lab == 0)); rest[rest > 0] += lab.max()
-        rest = morphology.remove_small_objects(rest, max_size=prm.min_cell_area)
-        labs.append(lab + rest)
+        labs.append(segment_frame(cellimg[z], low, core_thr, prm))
         if progress: progress((z + 1) / T * 0.5, f"세포 분할 frame {z+1}/{T}")
     CID = np.zeros(cellimg.shape, np.int32); nxt = 1
     for z in range(T):
@@ -58,20 +67,24 @@ def footprint(HT, CID, prm: FootprintParams):
     """배경(완전히 어두운 배지) 밖 = 세포 발자국. 세포질 밖 부분이 '퍼진 세포막'."""
     T = len(HT); FP = np.zeros(HT.shape, bool); stats = []
     for z in range(T):
-        o = ndi.gaussian_filter(morphology.opening(HT[z].astype(np.float32), morphology.disk(prm.open_radius)), prm.smooth_sigma)
-        v = o.ravel(); mode = np.median(v[v < np.percentile(v, 60)]); low = v[v < mode]
-        sig = float(np.sqrt(np.mean((low - mode) ** 2))) if low.size else float(np.std(v))
-        fp = o > mode + prm.k_sigma * sig
-        fp = morphology.closing(fp, morphology.disk(3)); fp = morphology.remove_small_objects(fp, max_size=prm.min_area)
-        fp = ndi.binary_fill_holes(fp); fp = ~morphology.remove_small_objects(~fp, max_size=500)
-        lab = measure.label(fp); cellm = ndi.binary_dilation(CID[z] > 0, iterations=3); keep = np.zeros(lab.max() + 1, bool)
-        for r in measure.regionprops(lab):
-            if r.area >= prm.keep_large or cellm[tuple(r.coords.T)].any(): keep[r.label] = True
-        FP[z] = keep[lab] | (CID[z] > 0)
-        stats.append(dict(frame=z + 1, bg_mode=float(mode), bg_sigma=sig, threshold=float(mode + prm.k_sigma * sig),
-                          footprint_frac=FP[z].mean(), cytoplasm_frac=(CID[z] > 0).mean(),
-                          spread_membrane_frac=(FP[z] & (CID[z] == 0)).mean()))
+        FP[z], st = footprint_frame(HT[z], CID[z], prm); stats.append(dict(frame=z + 1, **st))
     return FP, pd.DataFrame(stats)
+
+
+def footprint_frame(ht, cid, prm: FootprintParams):
+    """한 프레임의 세포 발자국 마스크와 배경 통계."""
+    o = ndi.gaussian_filter(morphology.opening(ht.astype(np.float32), morphology.disk(prm.open_radius)), prm.smooth_sigma)
+    v = o.ravel(); mode = np.median(v[v < np.percentile(v, 60)]); low = v[v < mode]
+    sig = float(np.sqrt(np.mean((low - mode) ** 2))) if low.size else float(np.std(v))
+    fp = o > mode + prm.k_sigma * sig
+    fp = morphology.closing(fp, morphology.disk(3)); fp = morphology.remove_small_objects(fp, max_size=prm.min_area)
+    fp = ndi.binary_fill_holes(fp); fp = ~morphology.remove_small_objects(~fp, max_size=500)
+    lab = measure.label(fp); cellm = ndi.binary_dilation(cid > 0, iterations=3); keep = np.zeros(lab.max() + 1, bool)
+    for r in measure.regionprops(lab):
+        if r.area >= prm.keep_large or cellm[tuple(r.coords.T)].any(): keep[r.label] = True
+    FP = keep[lab] | (cid > 0)
+    return FP, dict(bg_mode=float(mode), bg_sigma=sig, threshold=float(mode + prm.k_sigma * sig),
+                    footprint_frac=FP.mean(), cytoplasm_frac=(cid > 0).mean(), spread_membrane_frac=(FP & (cid == 0)).mean())
 
 
 def mitosis_table(HT, CID, prm: MitosisParams) -> pd.DataFrame:
@@ -81,7 +94,12 @@ def mitosis_table(HT, CID, prm: MitosisParams) -> pd.DataFrame:
         for r in measure.regionprops(CID[z], intensity_image=HT[z].astype(float)):
             rows.append(dict(frame=z + 1, cell_id=r.label, area=r.area, meanRI=r.intensity_mean, ecc=r.eccentricity, solidity=r.solidity))
     CS = pd.DataFrame(rows, columns=["frame", "cell_id", "area", "meanRI", "ecc", "solidity"]).sort_values(["cell_id", "frame"])
-    g = CS.groupby("cell_id")
+    return classify_mitosis(CS, prm)
+
+
+def classify_mitosis(CS, prm: MitosisParams) -> pd.DataFrame:
+    """세포·프레임별 면적/평균 RI 표에 분열 판정 열을 붙입니다 (파라미터만 바꿔 다시 판정할 때도 사용)."""
+    CS = CS[["frame", "cell_id", "area", "meanRI", "ecc", "solidity"]].copy(); g = CS.groupby("cell_id")
     CS["ref_RI"] = g.meanRI.transform(lambda x: x.shift(1).rolling(6, min_periods=2).median())
     CS["ref_area"] = g.area.transform(lambda x: x.shift(1).rolling(6, min_periods=2).median())
     CS["dRI"] = CS.meanRI - CS.ref_RI; CS["area_ratio"] = CS.area / CS.ref_area

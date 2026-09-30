@@ -24,24 +24,30 @@ def best_shift(ref, mov, R, m=40):
     return best
 
 
+def register_frame(a, b, ht, prm: RegistrationParams):
+    """한 프레임의 정합. 반환 (corr_FL_HT, dy_ht, dx_ht, corr_A_B, dy_B, dx_B, corr_A_B_noshift)."""
+    NH = ht.shape[0]
+    F = prep(resize(a.astype(np.float32), ht.shape, anti_aliasing=True)); H = prep(ht)
+    c, dy, dx = best_shift(H, F, prm.fl_ht_search)
+    Fs = np.roll(F, (dy, dx), (0, 1)); e = min(20, NH // 10)
+    try:
+        r, _, _ = phase_cross_correlation(H[e:-e, e:-e], Fs[e:-e, e:-e], upsample_factor=20)
+        if np.all(np.abs(r) <= 1.5): dy += r[0]; dx += r[1]
+    except Exception:
+        pass
+    cb, by, bx = best_shift(prep(a), prep(b), prm.ab_search)
+    m = min(40, a.shape[0] // 4)
+    c0 = np.corrcoef(prep(a)[m:-m, m:-m].ravel(), prep(b)[m:-m, m:-m].ravel())[0, 1]
+    return c, dy, dx, cb, by, bx, c0
+
+
 def register(A, B, HT, prm: RegistrationParams, progress=None) -> pd.DataFrame:
     """프레임별 이동량 표.
     - dy_ht, dx_ht : 형광 좌표 × 배율(S) + 이동 = HT 좌표
     - dy_B, dx_B   : np.roll(B, (dy_B, dx_B)) 하면 A와 정렬됨"""
-    T = A.shape[0]; NH = HT.shape[1]; rows = []
+    T = A.shape[0]; rows = []
     for z in range(T):
-        F = prep(resize(A[z].astype(np.float32), HT.shape[1:], anti_aliasing=True)); H = prep(HT[z])
-        c, dy, dx = best_shift(H, F, prm.fl_ht_search)
-        Fs = np.roll(F, (dy, dx), (0, 1)); e = min(20, NH // 10)
-        try:
-            r, _, _ = phase_cross_correlation(H[e:-e, e:-e], Fs[e:-e, e:-e], upsample_factor=20)
-            if np.all(np.abs(r) <= 1.5): dy += r[0]; dx += r[1]
-        except Exception:
-            pass
-        cb, by, bx = best_shift(prep(A[z]), prep(B[z]), prm.ab_search)
-        m = min(40, A.shape[1] // 4)
-        c0 = np.corrcoef(prep(A[z])[m:-m, m:-m].ravel(), prep(B[z])[m:-m, m:-m].ravel())[0, 1]
-        rows.append((z + 1, c, dy, dx, cb, by, bx, c0))
+        rows.append((z + 1, *register_frame(A[z], B[z], HT[z], prm)))
         if progress: progress((z + 1) / T, f"정합 frame {z+1}/{T}")
     reg = pd.DataFrame(rows, columns=["frame", "corr_FL_HT", "dy_ht", "dx_ht", "corr_A_B", "dy_B", "dx_B", "corr_A_B_noshift"])
     reg["FL_HT_reliable"] = reg.corr_FL_HT >= prm.fl_ht_min_corr

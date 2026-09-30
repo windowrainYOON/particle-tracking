@@ -26,6 +26,7 @@ from ..io_utils import DatasetSpec, auto_group_files
 from ..pipeline import STAGES, STAGE_LABELS, DatasetRunner
 from ..plots import track_trace
 from .param_form import ParamForm
+from .preview_panel import PreviewPanel
 from .table_model import DataFrameModel
 from .worker import start_worker
 from . import tasks
@@ -91,6 +92,7 @@ class MainWindow(QMainWindow):
         self.tbl = QTableWidget(0, len(COLS)); self.tbl.setHorizontalHeaderLabels(COLS)
         self.tbl.horizontalHeader().setSectionResizeMode(QHeaderView.Interactive); self.tbl.horizontalHeader().setStretchLastSection(True)
         self.tbl.setSelectionBehavior(QAbstractItemView.SelectRows); self.tbl.itemSelectionChanged.connect(self._update_cache_label)
+        self.tbl.itemChanged.connect(lambda _: self._specs_changed())     # 경로를 직접 고친 경우
         v.addWidget(self.tbl, 2)
         gb = QGroupBox("실행할 단계 (앞 단계 결과는 캐시에서 불러옵니다)"); g = QHBoxLayout(gb); self.stage_cb = {}
         for s in STAGES:
@@ -143,7 +145,7 @@ class MainWindow(QMainWindow):
         if not specs:
             QMessageBox.warning(self, "인식 실패", "Cy5 / pHrodo / HT 세트를 찾지 못했습니다.\n파일명 키워드를 [파라미터 > 채널·시간]에서 확인하거나 [수동 추가]를 쓰세요."); return
         for s in specs: self._add_spec(s)
-        self.log(f"데이터셋 {len(specs)}개 추가: {[s.name for s in specs]}"); self._refresh_combine_list()
+        self.log(f"데이터셋 {len(specs)}개 추가: {[s.name for s in specs]}"); self._refresh_combine_list(); self._specs_changed()
 
     def add_manual(self):
         paths = []
@@ -152,10 +154,11 @@ class MainWindow(QMainWindow):
             if not f: return
             paths.append(f)
         name = Path(paths[0]).stem; root = self._out_root() or str(Path(paths[0]).parent / "ParticleTracker_results")
-        self._add_spec(DatasetSpec(name, *paths, str(Path(root) / name))); self._refresh_combine_list()
+        self._add_spec(DatasetSpec(name, *paths, str(Path(root) / name))); self._refresh_combine_list(); self._specs_changed()
 
     def remove_rows(self):
         for r in sorted({i.row() for i in self.tbl.selectedIndexes()}, reverse=True): self.tbl.removeRow(r)
+        self._specs_changed()
 
     def set_out_root(self):
         d = QFileDialog.getExistingDirectory(self, "출력 루트 폴더", self._out_root())
@@ -163,6 +166,7 @@ class MainWindow(QMainWindow):
         self.settings.setValue("out_root", d)
         for r in range(self.tbl.rowCount()):
             self.tbl.item(r, 4).setText(str(Path(d) / self.tbl.item(r, 0).text())); self._refresh_status(r)
+        self._specs_changed()
 
     def _update_cache_label(self):
         specs = self._specs(True)
@@ -180,6 +184,7 @@ class MainWindow(QMainWindow):
         self._start(tasks.run_datasets, specs, self.cfg, stages, done=self._after_run)
 
     def _after_run(self, ok, msg):
+        self.preview.reset_sources()        # 새로 만들어진 캐시(정합·분열)를 미리보기에 반영
         for r in range(self.tbl.rowCount()): self._refresh_status(r)
         self._refresh_combine_list(); self._refresh_result_dirs()
 
@@ -191,8 +196,17 @@ class MainWindow(QMainWindow):
         row.addStretch(); v.addLayout(row)
         v.addWidget(QLabel("값을 바꾼 뒤 실행하면 적용됩니다. 항목에 마우스를 올리면 설명이 표시됩니다. "
                            "바뀐 파라미터가 속한 단계부터 다시 실행하세요 (예: 트래킹 파라미터 → 트래킹·측정·그래프·영상)."))
-        self.params = ParamForm(self.cfg); v.addWidget(self.params, 1)
+        sp = QSplitter(); self.params = ParamForm(self.cfg); sp.addWidget(self.params)
+        self.preview = PreviewPanel(lambda: self.params.apply_to(Config()), is_busy=lambda: self._thread is not None)
+        sp.addWidget(self.preview); sp.setSizes([460, 940]); v.addWidget(sp, 1)
+        self.params.changed.connect(lambda sec: self.preview.request())
+        self.params.sectionChanged.connect(self.preview.set_section); self.preview.set_section(self.params.current_section())
         return w
+
+    def _specs_changed(self):
+        if hasattr(self, "preview"):
+            try: self.preview.set_specs(self._specs())
+            except AttributeError: pass     # 행을 채우는 중 (아직 빈 칸)
 
     def load_params(self):
         f, _ = QFileDialog.getOpenFileName(self, "파라미터 불러오기", "", "YAML (*.yaml *.yml)")
@@ -218,6 +232,7 @@ class MainWindow(QMainWindow):
         d = json.loads(Path(f).read_text(encoding="utf-8")); self.tbl.setRowCount(0)
         for s in d.get("datasets", []): self._add_spec(DatasetSpec(**s))
         self.cfg = Config.from_dict(d.get("config", {})); self.params.set_config(self.cfg); self.rf_params.set_config(self.cfg); self._refresh_combine_list(); self._refresh_result_dirs()
+        self._specs_changed()
 
     # ================================================================ tab 3
     def _tab_results(self):
@@ -432,4 +447,5 @@ class MainWindow(QMainWindow):
         try: self.cfg.save(p); self.settings.setValue("last_config", str(p))
         except Exception: pass   # noqa: BLE001
         if self._worker is not None: self._worker.cancel_event.set()
+        self.preview.shutdown()
         super().closeEvent(e)
