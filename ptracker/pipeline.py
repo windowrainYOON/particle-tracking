@@ -106,8 +106,8 @@ class DatasetRunner:
         c = self.cfg; s = self.state; A = s["A"]
         df = tracking.prepare_detections(self._get("P"), self._get("reg"), s["S"], self._get("CID"), self._get("FP"), self._get("CS"), self._get("FLOW"), s["HT"])
         df = tracking.pattern_predictions(df, A, self._get("reg"), s["S"], c.detection, c.tracking, lambda f, m: self._prog("track", f * .5, m))
-        LK, AMB = tracking.link_frames(df, c.tracking, lambda f, m: self._prog("track", .5 + f * .45, m))
-        TR, ng = tracking.build_tracks(df, LK, c.tracking)
+        LK, AMB, PR = tracking.link_frames(df, c.tracking, lambda f, m: self._prog("track", .5 + f * .45, m))
+        TR, ng = tracking.build_tracks(df, LK, c.tracking, PR)
         self.log(f"연결 {len(LK)}, 트랙 {TR.track_id.nunique()}, gap closing {ng}, 모호한 연결 {np.mean(AMB) * 100 if len(AMB) else 0:.1f}%")
         tr = tracking.add_motion_columns(TR, c.channel.frame_interval_min)
         self._save("tracks_raw", tr); s["tracks_raw"] = tr

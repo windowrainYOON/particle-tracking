@@ -69,7 +69,7 @@ def per_cell(tr, CID, dt_min):
 
 
 POINT_COLUMNS = ["track_id", "group", "frame", "time_min", "label", "x", "y", "x_ht", "y_ht", "cell_id", "inside_cell", "region",
-                 "on_footprint", "in_mitotic_cell", "ht_confirmed", "pat_score", "area_px", "radius_equiv_px", "eccentricity",
+                 "on_footprint", "in_mitotic_cell", "ht_confirmed", "pat_score", "pat2_score", "pat_refined", "gate_used", "area_px", "radius_equiv_px", "eccentricity",
                  "I_A_raw", "bg_A", "I_A", "I_B_raw", "bg_B", "I_B", "I_B_max", "ratio_BA", "ratio_BA_raw", "HT_RI_mean", "HT_RI_max",
                  "step_ht", "cell_carried_ht", "residual_ht"]
 

@@ -33,23 +33,23 @@ mitosis:
   abs_ri: 13580.0
   max_ecc: 0.8
 tracking:
-  gate: 10.0
+  gate: 8.0
   w_cell: 2.0
-  w_int: 3.0
-  w_area: 1.5
+  w_int: 2.0
+  w_area: 1.0
   gap_closing: true
   pattern_half: 15
   pattern_search: 12
   pattern_score_hi: 0.5
-  pattern_score_lo: 0.4
+  pattern_score_lo: 0.3
   nb_radius: 25.0
   nb_min: 2
-  w_nb: 1.0
-  velocity_model: true
+  w_nb: 0.5
+  velocity_model: false
   vel_alpha: 0.4
   gate_k: 4.0
   gate_max: 16.0
-  pattern_refine: true
+  pattern_refine: false
   refine_half: 5
   refine_search: 24
   refine_min_score: 0.5

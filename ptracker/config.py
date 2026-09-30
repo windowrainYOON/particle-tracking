@@ -69,18 +69,27 @@ class MitosisParams:
 
 @dataclass
 class TrackingParams:
-    gate: float = p(8.0, "gate (HT px)", "예측 위치에서 이 거리 밖 후보는 연결 불가", min=1, max=50, step=0.5)
+    gate: float = p(10.0, "gate (HT px)", "예측 위치에서 이 거리 밖 후보는 연결 불가", min=1, max=50, step=0.5)
     w_cell: float = p(2.0, "세포 불일치 벌점", "", min=0, max=20, step=0.5)
-    w_int: float = p(2.0, "intensity 차이 가중치", "× |ln(I1/I2)|", min=0, max=20, step=0.5)
-    w_area: float = p(1.0, "크기 차이 가중치", "× |ln(A1/A2)|", min=0, max=20, step=0.5)
+    w_int: float = p(3.0, "intensity 차이 가중치", "× |ln(I1/I2)|", min=0, max=20, step=0.5)
+    w_area: float = p(1.5, "크기 차이 가중치", "× |ln(A1/A2)|", min=0, max=20, step=0.5)
     gap_closing: bool = p(True, "gap closing (1프레임 누락 연결)", "")
     pattern_half: int = p(15, "패턴 템플릿 반폭 (형광 px)", "입자와 주변 입자 배치를 담는 창 크기 = 2×반폭+1", min=3, max=60)
     pattern_search: int = p(12, "패턴 탐색 반경 (형광 px)", "", min=2, max=60)
     pattern_score_hi: float = p(0.5, "패턴 신뢰 상관 (≥ 이면 패턴 위치 사용)", "", min=0, max=1, step=0.05)
-    pattern_score_lo: float = p(0.3, "패턴 부분 신뢰 상관 (흐름과 반반)", "", min=0, max=1, step=0.05)
+    pattern_score_lo: float = p(0.4, "패턴 부분 신뢰 상관 (흐름과 반반)", "", min=0, max=1, step=0.05)
     nb_radius: float = p(25.0, "이웃 반경 (형광 px)", "이웃 이동 중앙값 계산 범위", min=1, max=200, step=1)
     nb_min: int = p(2, "최소 이웃 수", "", min=1, max=20)
-    w_nb: float = p(0.5, "이웃 일관성 가중치", "× |이 연결의 이동 − 이웃 이동 중앙값|", min=0, max=10, step=0.1)
+    w_nb: float = p(1.0, "이웃 일관성 가중치", "× |이 연결의 이동 − 이웃 이동 중앙값|", min=0, max=10, step=0.1)
+    velocity_model: bool = p(True, "트랙 속도 예측 (Kalman)", "패턴 신뢰도가 낮을 때 트랙 자체 속도(세포 흐름 제외)로 위치를 예측하고, 트랙별 예측 오차로 gate를 넓힘")
+    vel_alpha: float = p(0.4, "속도 평활 계수 α", "새 관측의 반영 비율 (α-β 필터). 클수록 최근 이동을 크게 반영", min=0.05, max=1, step=0.05)
+    gate_k: float = p(4.0, "적응형 gate 배수", "트랙별 gate = 배수 × 예측 오차 RMS (최소 gate, 최대 gate 사이)", min=1, max=10, step=0.5)
+    gate_max: float = p(16.0, "최대 gate (HT px)", "빠르게 움직이는 트랙에 허용하는 최대 gate", min=1, max=80, step=0.5)
+    pattern_refine: bool = p(True, "2단계 패턴 매칭", "1단계 점수가 낮으면 작은 템플릿(입자 자체)으로 더 넓게 다시 탐색")
+    refine_half: int = p(5, "2단계 템플릿 반폭 (형광 px)", "", min=2, max=30)
+    refine_search: int = p(24, "2단계 탐색 반경 (형광 px)", "", min=2, max=80)
+    refine_min_score: float = p(0.5, "2단계 최소 상관", "이 이상이면 2단계 위치 사용", min=0, max=1, step=0.05)
+    refine_weight: float = p(0.5, "2단계 위치 가중치", "예측 = 가중치 × 2단계 위치 + (1 − 가중치) × 흐름/속도 예측", min=0, max=1, step=0.1)
 
 
 @dataclass
