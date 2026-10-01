@@ -85,6 +85,10 @@ risefall:
   min_post: 3
   min_high_frames: 2
   min_points: 8
+  min_reliability: 0.5
+  rel_window: 3
+  rel_gap_err: 0.5
+  rel_merged_err: 0.3
 output:
   make_movies: true
   movie_fps: 3

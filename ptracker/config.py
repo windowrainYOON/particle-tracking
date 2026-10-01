@@ -127,6 +127,10 @@ class RiseFallParams:
     min_post: int = p(3, "감소 후 최소 관찰 시점", "", min=1, max=50)
     min_high_frames: int = p(2, "최고 구간 최소 연속 프레임", "1프레임 반짝 신호 제외", min=1, max=10)
     min_points: int = p(8, "판정 최소 비율 시점 수", "", min=4, max=100)
+    min_reliability: float = p(0.5, "최소 신뢰도", "결정 구간(최고점 − 여유 ~ 감소 + 여유)이 끝까지 같은 입자로 이어졌을 확률이 이 값 이상인 선별 입자만 '신뢰 선별'", min=0, max=1, step=0.05)
+    rel_window: int = p(3, "신뢰도 구간 여유 (프레임)", "", min=0, max=20)
+    rel_gap_err: float = p(0.5, "누락 연결 오류율 (가정)", "누락 프레임을 건너뛴 연결이 틀렸을 확률", min=0, max=1, step=0.05)
+    rel_merged_err: float = p(0.3, "합쳐짐 시점 오류율 (가정)", "합쳐짐/가림 시점마다 다른 입자로 바뀌었을 확률", min=0, max=1, step=0.05)
 
 
 @dataclass

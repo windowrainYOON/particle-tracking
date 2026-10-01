@@ -46,7 +46,7 @@ def load_points(source):
 
 def risefall(source, cfg, out_dir, result: dict, worker):
     worker.progress.emit(5, "데이터 읽는 중"); pts, dirs = load_points(source)
-    worker.progress.emit(30, "분류 중"); R, F = run_risefall(pts, cfg, out_dir, log=_logger(worker))
+    worker.progress.emit(30, "분류 중"); R, F = run_risefall(pts, cfg, out_dir, log=_logger(worker), dirs=dirs)
     result.update(points=pts, dirs=dirs, R=R, F=F, out_dir=str(out_dir)); worker.progress.emit(100, "분류 완료")
 
 

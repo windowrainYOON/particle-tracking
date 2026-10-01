@@ -27,7 +27,7 @@ from ..pipeline import STAGES, STAGE_LABELS, DatasetRunner
 from ..plots import track_trace
 from .param_form import ParamForm
 from .preview_panel import PreviewPanel
-from .track_views import TrackMapView, CropViewer, TrackExplorer, DatasetContext
+from .track_views import TrackMapView, CropViewer, TrackExplorer, DatasetContext, TrackEditor
 from .table_model import DataFrameModel
 from .worker import start_worker
 from . import tasks
@@ -367,6 +367,9 @@ class MainWindow(QMainWindow):
         self.rf_frac = QTableView(); self.rf_frac_model = DataFrameModel(); self.rf_frac.setModel(self.rf_frac_model); self.rf_frac.setMaximumHeight(190); mv.addWidget(self.rf_frac)
         row = QHBoxLayout(); self.rf_group = QComboBox(); self.rf_group.addItems(["세포 안", "세포 밖", "전체"]); self.rf_show = QComboBox(); self.rf_show.addItems(["선별 입자만", "후보 전체(제외 포함)", "모든 장기 트랙"])
         for wdg in (self.rf_group, self.rf_show): wdg.currentTextChanged.connect(self._rf_filter); row.addWidget(wdg)
+        self.rf_rel = QCheckBox("신뢰도 기준 이상만"); self.rf_rel.setChecked(True); self.rf_rel.toggled.connect(self._rf_filter)
+        self.rf_rel.setToolTip("결정 구간(최고점~감소)이 끝까지 같은 입자로 이어졌을 확률이 [최소 신뢰도] 이상인 선별 입자만 표시"); row.addWidget(self.rf_rel)
+        self.rf_count = QLabel(""); self.rf_count.setStyleSheet("color: gray"); row.addWidget(self.rf_count)
         row.addStretch(); mv.addLayout(row)
         self.rf_table = QTableView(); self.rf_model = DataFrameModel(); self.rf_table.setModel(self.rf_model); self.rf_table.setSortingEnabled(True)
         self.rf_table.setSelectionBehavior(QAbstractItemView.SelectRows); self.rf_table.selectionModel().selectionChanged.connect(self._rf_plot_selected)
@@ -375,6 +378,8 @@ class MainWindow(QMainWindow):
         self.rf_views = QTabWidget(); self.rf_views.addTab(self.canvas, "곡선")
         self.rf_map = TrackMapView(); self.rf_map.trackClicked.connect(self._rf_select_uid); self.rf_views.addTab(self.rf_map, "전체 영상 위치")
         self.rf_crop = CropViewer(); self.rf_views.addTab(self.rf_crop, "크롭 프레임"); self._rf_ctx = {}
+        self.rf_editor = TrackEditor(); self.rf_views.addTab(self.rf_editor, "경로 교정"); self.rf_editor.saved.connect(self._rf_edited)
+        self.rf_views.currentChanged.connect(lambda _: self._rf_load_editor())
         row = QHBoxLayout()
         b = QPushButton("선택 입자 크롭 영상 + 그래프"); b.clicked.connect(lambda: self.run_crops(False)); row.addWidget(b)
         b = QPushButton("현재 목록 전체 크롭"); b.clicked.connect(lambda: self.run_crops(True)); row.addWidget(b)
@@ -395,7 +400,9 @@ class MainWindow(QMainWindow):
 
     def _after_rf(self, ok, msg):
         if not ok or "R" not in self.rf: return
-        F = self.rf["F"]; self.rf_frac_model.set_df(F[["dataset", "group", "n_tracks", "candidates", "kept", "kept_abrupt", "kept_gradual", "kept_pct", "kept_pct_ci_low", "kept_pct_ci_high"]])
+        from .. import reliability
+        self.rf["perr"], _ = reliability.calibrate(list((self.rf.get("dirs") or {}).values()))
+        F = self.rf["F"]; self.rf_frac_model.set_df(F[["dataset", "group", "n_tracks", "candidates", "kept", "kept_reliable", "kept_pct", "kept_reliable_pct", "kept_abrupt", "kept_gradual", "kept_pct_ci_low", "kept_pct_ci_high"]])
         self._rf_filter(); self._refresh_result_dirs()
 
     def _rf_filter(self, *_):
@@ -404,7 +411,13 @@ class MainWindow(QMainWindow):
         g = {"세포 안": ["inside"], "세포 밖": ["outside"], "전체": ["inside", "outside"]}[self.rf_group.currentText()]
         d = R[R.group.isin(g)]; s = self.rf_show.currentText()
         d = d[d.keep] if s == "선별 입자만" else (d[d.candidate] if s.startswith("후보") else d)
-        cols = ["track_uid", "dataset", "group", "category", "keep", "filter_result", "base", "peak", "end", "peak_time_h", "decline_time_h", "n_valid"]
+        n_keep = int(d.keep.sum()); n_rel = int(d.reliable.sum()) if "reliable" in d else n_keep
+        if s == "선별 입자만" and self.rf_rel.isChecked() and "reliable" in d: d = d[d.reliable]
+        self.rf_count.setText(f"선별 {n_keep}개 중 신뢰도 기준 이상 {n_rel}개" + (" — 기준을 낮추거나 [경로 교정]으로 확인하세요" if n_keep and not n_rel else "")
+                              if "reliable" in R and R.reliability.notna().any() else "신뢰도 없음 (트래킹 → 측정을 다시 실행하면 계산됩니다)")
+        cols = ["track_uid", "dataset", "group", "category", "keep", "reliability", "risky_links", "gap_links", "filter_result", "base", "peak", "end",
+                "peak_time_h", "decline_time_h", "n_valid"]
+        cols = [c for c in cols if c in d]
         self.rf_model.set_df(d[cols].rename(columns={"base": "ratio_start", "peak": "ratio_peak", "end": "ratio_end"}))
         self._rf_update_map()
 
@@ -422,6 +435,26 @@ class MainWindow(QMainWindow):
         self.rf_map.select(u, frame=pk); cfg = self.params.apply_to(Config())
         info = f"{ds} | {u.split('::')[-1]} | {r.category if r is not None else ''} {'' if r is None or r.keep else '(제외: ' + str(r.filter_result) + ')'}"
         self.rf_crop.set_track(ctx, t, r, cfg.output.crop_half, cfg.channel.frame_interval_min, info, cfg.output.movie_fps)
+        self._rf_load_editor()
+
+    def _rf_load_editor(self):
+        """경로 교정 탭이 보일 때만 선택한 입자를 불러옴 (영상 읽기를 줄이려고)."""
+        if self.rf_views.currentWidget() is not self.rf_editor: return
+        uids = self._selected_uids(); pts = self.rf.get("points")
+        if not uids or pts is None or uids[0] == self.rf_editor._uid: return
+        u = uids[0]; ds = u.split("::")[0]; R = self.rf["R"]; r = R[R.track_uid == u].iloc[0] if u in set(R.track_uid) else None
+        self.rf_editor.set_track(self._rf_context(ds), pts[pts.dataset == ds], u, r, self.params.apply_to(Config()))
+
+    def _rf_edited(self, uid, new):
+        """교정 저장 → 그 입자의 점을 바꾸고 판정·신뢰도를 다시 계산해 표 갱신."""
+        from .. import analysis
+        pts = self.rf["points"]; new = new.reindex(columns=pts.columns)
+        self.rf["points"] = pts = pd.concat([pts[pts.track_uid != uid], new], ignore_index=True)
+        cfg = self.params.apply_to(Config()); Rn, _ = analysis.risefall(pts[pts.track_uid == uid], cfg.risefall, cfg.channel.frame_interval_min, perr=self.rf.get("perr"))
+        R = self.rf["R"]
+        if len(Rn): self.rf["R"] = pd.concat([R[R.track_uid != uid], Rn.reindex(columns=R.columns)], ignore_index=True)
+        self.log(f"경로 교정 저장: {uid} → " + (f"{Rn.category.iloc[0]}, 선별 {bool(Rn.keep.iloc[0])}, 신뢰도 {Rn.reliability.iloc[0]:.2f}" if len(Rn) else "장기 트랙 아님"))
+        self._rf_filter(); self._rf_select_uid(uid)
 
     def _rf_context(self, ds):
         if ds not in self._rf_ctx:
@@ -488,5 +521,5 @@ class MainWindow(QMainWindow):
         try: self.cfg.save(p); self.settings.setValue("last_config", str(p))
         except Exception: pass   # noqa: BLE001
         if self._worker is not None: self._worker.cancel_event.set()
-        self.preview.shutdown(); self.explorer.shutdown(); self.rf_crop.shutdown()
+        self.preview.shutdown(); self.explorer.shutdown(); self.rf_crop.shutdown(); self.rf_editor.view.clear()
         super().closeEvent(e)

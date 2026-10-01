@@ -116,6 +116,8 @@ class DatasetRunner:
         TR, ng = tracking.build_tracks(df, LK, c.tracking, PR, app_w=W)
         self.log(f"연결 {len(LK)}, 트랙 {TR.track_id.nunique()}, gap closing {ng}, 모호한 연결 {np.mean(AMB) * 100 if len(AMB) else 0:.1f}%")
         tr = tracking.add_motion_columns(TR, c.channel.frame_interval_min)
+        lk = LK.drop_duplicates("a").set_index("a")          # 연결 신뢰도용: 이 검출에서 다음 검출로 간 연결의 마진·비용
+        tr["link_margin"] = tr.idx.map(lk.margin).astype(float); tr["link_cost"] = tr.idx.map(lk.cost).astype(float)
         self._save("tracks_raw", tr); s["tracks_raw"] = tr
 
     def stage_measure(self):
@@ -174,9 +176,13 @@ def combine_and_plot(dataset_dirs: dict, out_dir, cfg: Config, log=print):
     return pts
 
 
-def run_risefall(pts: pd.DataFrame, cfg: Config, out_dir, log=print):
+def run_risefall(pts: pd.DataFrame, cfg: Config, out_dir, log=print, dirs=None):
+    from . import reliability
     out = Path(out_dir); out.mkdir(parents=True, exist_ok=True)
-    R, F = analysis.risefall(pts, cfg.risefall, cfg.channel.frame_interval_min)
+    perr, why = reliability.calibrate(list((dirs or {}).values()))
+    if "link_margin" in pts: log(f"신뢰도 오류율: {why} — " + ", ".join(f"마진 {k} {v * 100:.0f}%" for k, v in perr.items()))
+    else: log("결과에 연결 마진(link_margin)이 없어 신뢰도를 계산하지 않습니다 — 트래킹 → 측정 단계를 다시 실행하세요")
+    R, F = analysis.risefall(pts, cfg.risefall, cfg.channel.frame_interval_min, perr=perr)
     if R.empty: raise ValueError("분류할 장기 트랙이 없습니다")
     R.round(5).to_csv(out / "risefall_classification_all_tracks.csv", index=False); F.round(3).to_csv(out / "risefall_fraction_summary.csv", index=False)
     plots.risefall_fraction(F, str(out / "risefall_fraction.png"))

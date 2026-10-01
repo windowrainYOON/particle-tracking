@@ -411,25 +411,99 @@ class TrackExplorer(QWidget):
         self.gcanvas.draw_idle()
 
 
+# ====================================================================== 전체 영상 확대 보기 (정답 표시·경로 교정 공용)
+class FrameZoomView(QWidget):
+    """이전 프레임 Cy5 / 현재 프레임 Cy5 / 현재 HT를 형광 좌표로 나란히 (셋이 함께 확대·이동).
+    휠 = 확대/축소, 툴바 손 버튼 = 이동. 프레임을 바꿔도 보는 영역은 그대로이고, 중심 위치가 가장자리로 나갈 때만 따라갑니다.
+    현재 프레임(가운데·HT)을 클릭하면 clicked(x, y, 붙은 검출 행 또는 None)를 보냅니다 (검출에서 6 px 이내면 그 검출에 붙음)."""
+    clicked = Signal(float, float, object)
+    VIEW = 70
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._ctx = self._src = self._pts = None; self._bg = {}; self._view = None; self._axs = None; self._f = 1
+        v = QVBoxLayout(self); v.setContentsMargins(0, 0, 0, 0)
+        self.fig = Figure(figsize=(10, 4)); self.canvas = FigureCanvasQTAgg(self.fig); self.tb = NavigationToolbar2QT(self.canvas, self)
+        self.canvas.mpl_connect("button_press_event", self._on_click); self.canvas.mpl_connect("scroll_event", self._on_scroll)
+        v.addWidget(self.tb); v.addWidget(self.canvas, 1)
+
+    def set_source(self, ctx, src, pts):
+        self._ctx, self._src, self._pts = ctx, src, pts; self._bg.clear(); self._view = None; self._axs = None
+
+    def recenter(self, c):
+        h = self.VIEW; self._view = ((c[0] - h, c[0] + h), (c[1] + h, c[1] - h))
+
+    def clear(self): self.fig.clear(); self._axs = None; self.canvas.draw_idle()
+
+    def _frame_img(self, ch, f):
+        key = (ch, f)
+        if key not in self._bg:
+            im = self._src.frame(ch, f - 1).astype(np.float32); lo, hi = np.percentile(im[::4, ::4], (0.5, 99.8) if ch == "ht" else (1, 99.7))
+            if len(self._bg) > 6: self._bg.pop(next(iter(self._bg)))
+            self._bg[key] = np.clip((im - lo) / max(hi - lo, 1e-9), 0, 1)
+        return self._bg[key]
+
+    def _ht_extent(self, f):
+        S = self._src.S; reg = self._ctx.reg; dy = dx = 0.0
+        if reg is not None and len(reg) >= f: dy, dx = reg.dy_ht.values[f - 1], reg.dx_ht.values[f - 1]
+        to = lambda v, d: (v + 0.5 - d) / S - 0.5
+        return (to(-0.5, dx), to(self._src.NHW - 0.5, dx), to(self._src.NH - 0.5, dy), to(-0.5, dy))
+
+    def show(self, f, center, marks, path=None, title_cur="클릭해 위치 지정"):
+        """marks: {"prev": (x, y, 색) | None, "cur": (x, y, 색) | None}, path: (xs, ys) 확인한 경로 (초록 점선)."""
+        self._f = f
+        if self._axs is not None: self._view = (self._axs[1].get_xlim(), self._axs[1].get_ylim())
+        if self._view is None: self.recenter(center)
+        (x0, x1), (y1, y0) = self._view; w, hgt = x1 - x0, y1 - y0
+        if not (x0 + .15 * w <= center[0] <= x1 - .15 * w and y0 + .15 * hgt <= center[1] <= y1 - .15 * hgt):
+            self._view = ((center[0] - w / 2, center[0] + w / 2), (center[1] + hgt / 2, center[1] - hgt / 2))
+        self.fig.clear(); a0 = self.fig.add_subplot(131)
+        axs = [a0, self.fig.add_subplot(132, sharex=a0, sharey=a0), self.fig.add_subplot(133, sharex=a0, sharey=a0)]; self._axs = axs
+        if f > 1: axs[0].imshow(self._frame_img("cy5", f - 1), cmap="gray", interpolation="nearest")
+        axs[1].imshow(self._frame_img("cy5", f), cmap="gray", interpolation="nearest")
+        axs[2].imshow(self._frame_img("ht", f), cmap="gray", interpolation="nearest", extent=self._ht_extent(f))
+        for ax, t in zip(axs, [f"이전 frame {f - 1}", f"frame {f} — {title_cur}", f"HT frame {f}"]): ax.set_title(t, fontsize=9); ax.set_xticks([]); ax.set_yticks([])
+        (vx0, vx1), (vy1, vy0) = self._view; m = 10
+        if self._pts is not None:
+            for ax, ff in ((axs[0], f - 1), (axs[1], f), (axs[2], f)):
+                d = self._pts[(self._pts.frame == ff) & self._pts.x_fl.between(vx0 - m, vx1 + m) & self._pts.y_fl.between(vy0 - m, vy1 + m)]
+                ax.plot(d.x_fl, d.y_fl, "o", ms=10, mfc="none", mec="cyan", mew=.6, ls="none", alpha=.8)
+        if path is not None:
+            for ax in axs: ax.plot(path[0], path[1], ":", color="lime", lw=1, alpha=.7)
+        for ax, key in ((axs[0], "prev"), (axs[1], "cur"), (axs[2], "cur")):
+            mk = marks.get(key)
+            if mk is not None and np.isfinite(mk[0]): ax.plot(mk[0], mk[1], "+", ms=18, mew=2, color=mk[2])
+        axs[0].set_xlim(self._view[0]); axs[0].set_ylim(self._view[1]); self.fig.tight_layout(); self.canvas.draw_idle()
+
+    def _on_scroll(self, ev):
+        if self._axs is None or ev.inaxes is None or ev.xdata is None: return
+        k = 1 / 1.25 if ev.button == "up" else 1.25; ax = self._axs[1]
+        (x0, x1), (y0, y1) = ax.get_xlim(), ax.get_ylim()
+        ax.set_xlim(ev.xdata + (x0 - ev.xdata) * k, ev.xdata + (x1 - ev.xdata) * k); ax.set_ylim(ev.ydata + (y0 - ev.ydata) * k, ev.ydata + (y1 - ev.ydata) * k)
+        self._view = (ax.get_xlim(), ax.get_ylim()); self.canvas.draw_idle()
+
+    def _on_click(self, ev):
+        if self._axs is None or ev.inaxes not in (self._axs[1], self._axs[2]) or ev.xdata is None or self.tb.mode or ev.button != 1: return
+        x, y = ev.xdata, ev.ydata; row = None; d = self._pts[self._pts.frame == self._f] if self._pts is not None else pd.DataFrame()
+        if len(d):
+            dist, j = cKDTree(d[["x_fl", "y_fl"]].values).query([x, y])
+            if dist <= 6: row = d.iloc[j]; x, y = float(row.x_fl), float(row.y_fl)
+        self.clicked.emit(float(x), float(y), row)
+
+
 # ====================================================================== 정답 표시 (ground truth)
 class AnnotationPanel(QWidget):
-    """트랙 하나를 시작점으로 프레임마다 '이 입자가 맞는지'를 확인해 정답 궤적을 만듭니다.
-
-    화면: 전체 프레임을 확대해 보여줍니다 (이전 프레임 Cy5 / 현재 프레임 Cy5 / 현재 HT — 셋이 같이 확대·이동).
-      마우스 휠 = 확대/축소, 툴바의 이동(손) 버튼 또는 가운데 드래그 = 이동, [입자 위치로] = 다시 가운데로.
-      프레임을 바꿔도 보는 영역은 그대로이고, 표시 위치가 화면 가장자리로 나갈 때만 따라갑니다.
+    """트랙 하나를 시작점으로 프레임마다 '이 입자가 맞는지'를 확인해 정답 궤적을 만듭니다 (화면: FrameZoomView).
     · 현재 프레임(가운데 또는 HT)을 클릭 → 그 위치(가까운 검출에 붙음)를 정답으로 하고 다음 프레임으로
     · Enter = 표시된 위치가 맞음, M = 합쳐짐/가림, X = 안 보임, U = 모름, E = 여기서 끝, ←/→ = 이동
     · pHrodo는 보여주지 않습니다 (분석 결과값을 보고 판단하지 않도록).
     저장: <결과 폴더>/ground_truth.csv (바뀔 때마다 자동 저장)
     """
-    VIEW = 70          # 처음 보여줄 반폭 (형광 px)
 
     def __init__(self, parent=None):
         super().__init__(parent)
         from PySide6.QtGui import QShortcut, QKeySequence
-        self._ctx = None; self._src = None; self._pts = None; self._gt = None; self._gid = None; self._f = 1; self._T = 1; self._eval = None
-        self._view = None; self._bg = {}; self._reco = None
+        self._ctx = None; self._src = None; self._pts = None; self._gt = None; self._gid = None; self._f = 1; self._T = 1; self._eval = None; self._reco = None
         self._pool = ThreadPoolExecutor(max_workers=1); self._bridge = _Bridge(); self._bridge.done.connect(self._on_trained)
         v = QVBoxLayout(self); row = QHBoxLayout()
         self.reco = QComboBox(); self.reco.setToolTip("정답을 표시하면 좋을 트랙 (어려운 경우를 고루 골랐습니다). 고르면 위 표에서 그 트랙이 선택됩니다")
@@ -452,9 +526,7 @@ class AnnotationPanel(QWidget):
         v.addLayout(row)
         self.lbl = QLabel("[추천 트랙 뽑기]로 정답을 표시할 트랙을 고르거나, 위 표에서 트랙을 고른 뒤 [선택한 트랙으로 새 정답]을 누르세요.")
         self.lbl.setWordWrap(True); v.addWidget(self.lbl)
-        self.fig = Figure(figsize=(10, 4)); self.canvas = FigureCanvasQTAgg(self.fig); self.tb = NavigationToolbar2QT(self.canvas, self)
-        self.canvas.mpl_connect("button_press_event", self._on_click); self.canvas.mpl_connect("scroll_event", self._on_scroll)
-        v.addWidget(self.tb); v.addWidget(self.canvas, 1); self._axs = None
+        self.view = FrameZoomView(); self.view.clicked.connect(self._on_view_click); v.addWidget(self.view, 1)
         for keyseq, fn in [("Return", lambda: self._mark("ok")), ("Enter", lambda: self._mark("ok")), ("M", lambda: self._mark("merged")),
                            ("X", lambda: self._mark("absent")), ("U", lambda: self._mark("unsure")), ("E", self._end),
                            ("Left", lambda: self._go(-1)), ("Right", lambda: self._go(1))]:
@@ -471,10 +543,11 @@ class AnnotationPanel(QWidget):
         """pts: 이 데이터셋의 모든 검출 point (frame, roi_label, x_fl, y_fl, track_uid ...)."""
         from ..gt import load_gt, RECO_FILE
         if ctx is not None and self._ctx is not None and ctx.folder == self._ctx.folder and pts is self._pts: return
-        self._ctx, self._pts, self._gid = ctx, pts, None; self._src = None; self._bg.clear(); self._view = None; self._axs = None
+        self._ctx, self._pts, self._gid = ctx, pts, None; self._src = None
         if ctx is None: self._gt = None; self.lbl.setText("원본 데이터셋 위치 정보가 없어 정답을 만들 수 없습니다"); self._refresh_list(); self._draw(); return
         try: self._src = PreviewSource(ctx.spec, max_frames=6); self._T = self._src.T
         except DataUnavailable as e: self.lbl.setText(str(e))
+        self.view.set_source(ctx, self._src, pts)
         self._gt = load_gt(ctx.folder); self._refresh_list()
         f = ctx.folder / RECO_FILE; self._reco = pd.read_csv(f) if f.exists() else None; self._fill_reco(); self._draw()
 
@@ -497,7 +570,7 @@ class AnnotationPanel(QWidget):
         gid = self.sel.currentData()
         if gid is None: return
         self._gid = int(gid); s = self._gt[self._gt.gt_id == self._gid]
-        un = s[s.status == "auto"]; self._f = int(un.frame.min() if len(un) else s.frame.max()); self._view = None; self._draw()
+        un = s[s.status == "auto"]; self._f = int(un.frame.min() if len(un) else s.frame.max()); self.view._view = None; self._draw()
 
     # ------------------------------------------------------------ 추천
     def _make_reco(self):
@@ -525,7 +598,7 @@ class AnnotationPanel(QWidget):
         sel = self.get_selected()
         if sel is None or self._gt is None: self.lbl.setText("먼저 위 표(또는 추천 목록)에서 트랙을 고르세요"); return
         uid, t = sel
-        self._gt, gid = new_from_track(self._gt, t.sort_values("frame"), uid); self._gid = gid; self._f = int(t.frame.min()); self._view = None
+        self._gt, gid = new_from_track(self._gt, t.sort_values("frame"), uid); self._gid = gid; self._f = int(t.frame.min()); self.view._view = None
         self._save(); self._refresh_list(keep=gid); self._fill_reco(); self._draw()
 
     def _delete(self):
@@ -544,71 +617,26 @@ class AnnotationPanel(QWidget):
         if not len(s): return None
         s = s.assign(d=(s.frame - f).abs() + (s.status == "auto") * 0.5); k = s.d.idxmin(); return s.x_fl[k], s.y_fl[k]
 
-    def _frame_img(self, ch, f):
-        key = (ch, f)
-        if key not in self._bg:
-            im = self._src.frame(ch, f - 1).astype(np.float32); lo, hi = np.percentile(im[::4, ::4], (0.5, 99.8) if ch == "ht" else (1, 99.7))
-            if len(self._bg) > 6: self._bg.pop(next(iter(self._bg)))
-            self._bg[key] = np.clip((im - lo) / max(hi - lo, 1e-9), 0, 1)
-        return self._bg[key]
-
-    def _ht_extent(self, f):
-        """HT 영상을 형광 좌표에 겹쳐 그리기 위한 extent (정합 이동 반영)."""
-        S = self._src.S; reg = self._ctx.reg; dy = dx = 0.0
-        if reg is not None and len(reg) >= f: dy, dx = reg.dy_ht.values[f - 1], reg.dx_ht.values[f - 1]
-        to = lambda v, d: (v + 0.5 - d) / S - 0.5
-        return (to(-0.5, dx), to(self._src.NHW - 0.5, dx), to(self._src.NH - 0.5, dy), to(-0.5, dy))
-
     def _recenter(self):
         c = self._center(self._f)
-        if c is not None: h = self.VIEW; self._view = ((c[0] - h, c[0] + h), (c[1] + h, c[1] - h)); self._draw()
+        if c is not None: self.view.recenter(c); self.view._axs = None; self._draw()
 
     def _draw(self):
         en = self._gid is not None and self._src is not None
         for b in self.btns.values(): b.setEnabled(en)
-        if not en: self.fig.clear(); self._axs = None; self.canvas.draw_idle(); return
+        if not en: self.view.clear(); return
         f = self._f; c = self._center(f)
-        if c is None: self.canvas.draw_idle(); return
-        if self._axs is not None:                 # 지금 보는 영역 유지
-            self._view = (self._axs[1].get_xlim(), self._axs[1].get_ylim())
-        if self._view is None: h = self.VIEW; self._view = ((c[0] - h, c[0] + h), (c[1] + h, c[1] - h))
-        (x0, x1), (y1, y0) = self._view; w, hgt = x1 - x0, y1 - y0
-        if not (x0 + .15 * w <= c[0] <= x1 - .15 * w and y0 + .15 * hgt <= c[1] <= y1 - .15 * hgt):   # 가장자리로 나가면 따라감
-            self._view = ((c[0] - w / 2, c[0] + w / 2), (c[1] + hgt / 2, c[1] - hgt / 2))
-        self.fig.clear(); a0 = self.fig.add_subplot(131); axs = [a0, self.fig.add_subplot(132, sharex=a0, sharey=a0), self.fig.add_subplot(133, sharex=a0, sharey=a0)]
-        self._axs = axs
-        try:
-            if f > 1: axs[0].imshow(self._frame_img("cy5", f - 1), cmap="gray", interpolation="nearest")
-            axs[1].imshow(self._frame_img("cy5", f), cmap="gray", interpolation="nearest")
-            axs[2].imshow(self._frame_img("ht", f), cmap="gray", interpolation="nearest", extent=self._ht_extent(f))
-        except DataUnavailable as e: self.lbl.setText(str(e)); self.canvas.draw_idle(); return
-        for ax, t in zip(axs, [f"이전 frame {f - 1}", f"frame {f} — 클릭해 위치 지정", f"HT frame {f}"]): ax.set_title(t, fontsize=9); ax.set_xticks([]); ax.set_yticks([])
-        (vx0, vx1), (vy1, vy0) = self._view; m = 10
-        if self._pts is not None:                  # 보이는 영역의 모든 검출
-            for ax, ff in ((axs[0], f - 1), (axs[1], f), (axs[2], f)):
-                d = self._pts[(self._pts.frame == ff) & self._pts.x_fl.between(vx0 - m, vx1 + m) & self._pts.y_fl.between(vy0 - m, vy1 + m)]
-                ax.plot(d.x_fl, d.y_fl, "o", ms=10, mfc="none", mec="cyan", mew=.6, ls="none", alpha=.8)
-        s = self._gt[(self._gt.gt_id == self._gid)].sort_values("frame")
-        conf = s[s.status == "ok"]
-        for ax in axs: ax.plot(conf.x_fl, conf.y_fl, ":", color="lime", lw=1, alpha=.7)        # 확인한 경로
+        if c is None: return
         cols = {"ok": "lime", "auto": "yellow", "merged": "orange", "absent": "red", "unsure": "violet"}
-        for ax, ff in ((axs[0], f - 1), (axs[1], f), (axs[2], f)):
-            r = self._row(ff)
-            if r is not None and np.isfinite(r.x_fl): ax.plot(r.x_fl, r.y_fl, "+", ms=18, mew=2, color=cols.get(r.status, "w"))
-        axs[0].set_xlim(self._view[0]); axs[0].set_ylim(self._view[1]); self.fig.tight_layout()
+        mk = lambda r: (r.x_fl, r.y_fl, cols.get(r.status, "w")) if r is not None and np.isfinite(r.x_fl) else None
+        s = self._gt[(self._gt.gt_id == self._gid)].sort_values("frame"); conf = s[s.status == "ok"]
+        try: self.view.show(f, c, {"prev": mk(self._row(f - 1)), "cur": mk(self._row(f))}, (conf.x_fl, conf.y_fl))
+        except DataUnavailable as e: self.lbl.setText(str(e)); return
         from ..gt import STATUS_LABELS
         r = self._row(f); st = r.status if r is not None else "(없음)"
         self.lbl.setText(f"정답 #{self._gid} · frame {f}/{self._T} · 이 프레임: {STATUS_LABELS.get(st, st)} · 확인 {int((s.status != 'auto').sum())}/{len(s)}  "
                          "— 노란 + = 트래커 위치(미확인), 초록 = 맞음, 주황 = 합쳐짐/가림, 하늘색 원 = 검출(클릭하면 붙음), 초록 점선 = 확인한 경로 · 휠 = 확대/축소"
                          + (f"\n{self._eval}" if self._eval else ""))
-        self.canvas.draw_idle()
-
-    def _on_scroll(self, ev):
-        if self._axs is None or ev.inaxes is None or ev.xdata is None: return
-        k = 1 / 1.25 if ev.button == "up" else 1.25; ax = self._axs[1]
-        (x0, x1), (y0, y1) = ax.get_xlim(), ax.get_ylim()
-        ax.set_xlim(ev.xdata + (x0 - ev.xdata) * k, ev.xdata + (x1 - ev.xdata) * k); ax.set_ylim(ev.ydata + (y0 - ev.ydata) * k, ev.ydata + (y1 - ev.ydata) * k)
-        self._view = (ax.get_xlim(), ax.get_ylim()); self.canvas.draw_idle()
 
     # ------------------------------------------------------------ 조작
     def _go(self, step):
@@ -625,19 +653,14 @@ class AnnotationPanel(QWidget):
         if self._gid is None: return
         self._gt = truncate(self._gt, self._gid, self._f); self._save(); self._refresh_list(keep=self._gid); self._draw()
 
-    def _on_click(self, ev):
-        from ..gt import set_point
-        if self._gid is None or self._axs is None or ev.inaxes not in (self._axs[1], self._axs[2]) or ev.xdata is None or self.tb.mode: return
-        if ev.button != 1: return
-        x, y = ev.xdata, ev.ydata; lab = None; d = self._pts[self._pts.frame == self._f] if self._pts is not None else pd.DataFrame()
-        if len(d):
-            dist, j = cKDTree(d[["x_fl", "y_fl"]].values).query([x, y])
-            if dist <= 6: x, y, lab = d.x_fl.values[j], d.y_fl.values[j], int(d.roi_label.values[j])
+    def _on_view_click(self, x, y, row):
+        from ..gt import set_point, reseed_after
+        if self._gid is None: return
+        lab = int(row.roi_label) if row is not None else None
         prev = self._row(self._f); changed = lab is not None and (prev is None or int(prev.roi_label) != lab)
         self._gt = set_point(self._gt, self._gid, self._f, x, y, lab, status="ok")
-        if changed and "track_uid" in d:          # 다른 입자로 고쳤으면 이후 미확인 점을 그 입자의 트랙으로 다시 채움
-            from ..gt import reseed_after
-            uid = d.track_uid.values[j]; self._gt = reseed_after(self._gt, self._gid, self._f, self._pts[self._pts.track_uid == uid])
+        if changed and "track_uid" in row:          # 다른 입자로 고쳤으면 이후 미확인 점을 그 입자의 트랙으로 다시 채움
+            self._gt = reseed_after(self._gt, self._gid, self._f, self._pts[self._pts.track_uid == row.track_uid])
         self._save(); self._refresh_list(keep=self._gid); self._go(1)
 
     def _evaluate(self):
@@ -665,7 +688,9 @@ class AnnotationPanel(QWidget):
 
     def _on_trained(self, _seq, res):
         from PySide6.QtWidgets import QMessageBox
-        path, text = res; self.b_learn.setEnabled(True); self._eval = text; self._draw() if self._gid is not None else self.lbl.setText(text)
+        path, text = res; self.b_learn.setEnabled(True); self._eval = text
+        if self._gid is not None: self._draw()
+        else: self.lbl.setText(text)
         if not path: return
         if QMessageBox.question(self, "학습 완료", text + "\n\n이 모델을 트래킹에 쓰도록 [파라미터 > 트래킹 > 학습된 연결 모델]에 지정할까요?\n"
                                 "(지정한 뒤 트래킹 → 측정 단계를 다시 실행해야 결과에 반영됩니다)") == QMessageBox.Yes:
@@ -748,3 +773,172 @@ class LinkCheckPanel(QWidget):
         self.lbl.setText(f"표본 {self._i + 1}/{len(self._C)} · 프레임 {int(r.frame_a)} → {int(r.frame_b)} · 지금 답: {ans} — 초록 원 안의 두 입자가 같은 입자인가요? (Y/N/U)\n"
                          + checks_summary(self._C))
         self.canvas.draw_idle()
+
+
+# ====================================================================== 특이 입자 경로 교정
+class TrackEditor(QWidget):
+    """선별된 입자의 경로를 프레임마다 고치고, 고칠 때마다 밝기·비율 그래프와 특이 입자 판정을 바로 다시 보여줍니다.
+    · 현재 프레임 클릭: 검출 근처면 그 검출로, 아니면 그 자리를 원형 ROI로 측정 → 다음 프레임
+      (다른 입자를 고르면 그 뒤의 '확인 안 한' 프레임은 고른 입자의 트랙으로 다시 채움)
+    · Enter = 이 위치가 맞음(확인), X = 이 프레임에는 없음, R = 원래 위치로, E = 여기서 끝, ←/→ = 이동, [저장]
+    저장: <결과 폴더>/track_edits.csv + 정답(ground_truth.csv)에도 추가 → [학습하기]·신뢰도 계산에 쓰임."""
+    saved = Signal(str, object)          # (track_uid, 교정된 point 표)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        from PySide6.QtGui import QShortcut, QKeySequence
+        self._ctx = self._src = self._pts = None; self._uid = None; self._orig = None; self._path = {}; self._f = 1; self._T = 1; self._cfg = None; self._r = None
+        self._dirty = False
+        v = QVBoxLayout(self); row = QHBoxLayout(); self.btns = {}
+        for key, text, fn in [("prev", "◀ (←)", lambda: self._go(-1)), ("ok", "✔ 맞음 (Enter)", self._confirm), ("none", "없음 (X)", self._remove),
+                              ("reset", "원래대로 (R)", self._reset_frame), ("end", "여기서 끝 (E)", self._end), ("next", "(→) ▶", lambda: self._go(1)),
+                              ("center", "입자 위치로", self._recenter), ("save", "저장", self._save), ("revert", "교정 전부 취소", self._revert)]:
+            b = QPushButton(text); b.clicked.connect(fn); row.addWidget(b); self.btns[key] = b
+        row.addStretch(); v.addLayout(row)
+        self.lbl = QLabel("표에서 입자를 고르면 경로를 교정할 수 있습니다."); self.lbl.setWordWrap(True); v.addWidget(self.lbl)
+        sp = QSplitter(Qt.Vertical); self.view = FrameZoomView(); self.view.clicked.connect(self._on_click); sp.addWidget(self.view)
+        self.gfig = Figure(figsize=(8, 3)); self.gcanvas = FigureCanvasQTAgg(self.gfig); sp.addWidget(self.gcanvas); sp.setSizes([520, 300]); v.addWidget(sp, 1)
+        for keyseq, fn in [("Return", self._confirm), ("Enter", self._confirm), ("X", self._remove), ("R", self._reset_frame), ("E", self._end),
+                           ("Left", lambda: self._go(-1)), ("Right", lambda: self._go(1))]:
+            sc = QShortcut(QKeySequence(keyseq), self); sc.setContext(Qt.WidgetWithChildrenShortcut); sc.activated.connect(fn)
+
+    # ------------------------------------------------------------ 입력
+    def set_track(self, ctx, pts_ds, uid, r, cfg):
+        """pts_ds: 그 데이터셋의 모든 검출 point(측정값 포함), r: 특이 입자 분류 행."""
+        if ctx is None: self.lbl.setText("원본 데이터셋 위치 정보가 없어 교정할 수 없습니다"); return
+        if self._ctx is None or ctx.folder != self._ctx.folder:
+            try: self._src = PreviewSource(ctx.spec, max_frames=8); self._T = self._src.T
+            except DataUnavailable as e: self.lbl.setText(str(e)); return
+        self._ctx, self._pts, self._uid, self._r, self._cfg = ctx, pts_ds, uid, r, cfg
+        self.view.set_source(ctx, self._src, pts_ds)
+        t = pts_ds[pts_ds.track_uid == uid].sort_values("frame"); self._orig = t
+        self._path = {int(x.frame): dict(x_fl=x.x_fl, y_fl=x.y_fl, roi_label=int(x.roi_label),
+                                         status="ok" if bool(getattr(x, "verified", False)) else "orig", **{c: getattr(x, c, np.nan) for c in ("I_A", "I_B", "ratio_BA")})
+                      for x in t.itertuples()}
+        pk = getattr(r, "peak_frame", np.nan) if r is not None else np.nan
+        self._f = int(pk) if np.isfinite(pk) else int(t.frame.min()); self._dirty = False; self.view._view = None; self._draw()
+
+    def _meas(self, frame, label):
+        d = self._pts[(self._pts.frame == frame) & (self._pts.roi_label == label)]
+        return {c: float(d[c].iloc[0]) if len(d) and c in d else np.nan for c in ("I_A", "I_B", "ratio_BA")}
+
+    # ------------------------------------------------------------ 표시
+    def _center(self, f):
+        if f in self._path: return self._path[f]["x_fl"], self._path[f]["y_fl"]
+        if not self._path: return None
+        k = min(self._path, key=lambda g: abs(g - f)); return self._path[k]["x_fl"], self._path[k]["y_fl"]
+
+    def _recenter(self):
+        c = self._center(self._f)
+        if c is not None: self.view.recenter(c); self.view._axs = None; self._draw()
+
+    def _series(self):
+        fr = sorted(self._path); P = pd.DataFrame([dict(frame=f, **self._path[f]) for f in fr])
+        if len(P): P["time_min"] = (P.frame - 1) * self._cfg.channel.frame_interval_min
+        return P
+
+    def _draw(self):
+        en = self._uid is not None
+        for b in self.btns.values(): b.setEnabled(en)
+        if not en: return
+        f = self._f; c = self._center(f)
+        cols = {"orig": "yellow", "edit": "lime", "ok": "lime"}
+        mk = lambda g: (self._path[g]["x_fl"], self._path[g]["y_fl"], cols[self._path[g]["status"]]) if g in self._path else None
+        P = self._series(); ver = P[P.status.isin(["edit", "ok"])] if len(P) else P
+        try: self.view.show(f, c, {"prev": mk(f - 1), "cur": mk(f)}, (ver.x_fl, ver.y_fl) if len(ver) else None, "클릭해 경로 교정")
+        except DataUnavailable as e: self.lbl.setText(str(e)); return
+        self._draw_graph(P)
+
+    def _draw_graph(self, P):
+        from ..analysis import classify_track
+        from ..plots import CNAME
+        cfg = self._cfg; dt = cfg.channel.frame_interval_min; f = self._f
+        self.gfig.clear(); ax = self.gfig.add_subplot(111); o = self._orig
+        ax.plot(o.time_min / 60 if "time_min" in o else (o.frame - 1) * dt / 60, o.ratio_BA, "--", color="gray", lw=1, label="원래 경로 비율")
+        if len(P):
+            th = P.time_min / 60; ax.plot(th, P.ratio_BA, "o-", color="tab:purple", ms=3, lw=1.2, label="교정 경로 비율")
+            e = P[P.status.isin(["edit", "ok"])]; ax.plot(e.time_min / 60, e.ratio_BA, "o", mfc="none", mec="lime", ms=7, mew=1.2, ls="none", label="교정·확인한 점")
+            a2 = ax.twinx(); a2.plot(th, P.I_A, "-", color="tab:red", alpha=.45, lw=1, label="I(Cy5)"); a2.plot(th, P.I_B * 10, "-", color="tab:orange", alpha=.45, lw=1, label="I(pHrodo)×10")
+            a2.set_ylabel("intensity", fontsize=8); a2.legend(loc="upper right", fontsize=7)
+        ax.axvline((f - 1) * dt / 60, color="k", lw=1, ls=":"); ax.set_xlabel("시간 (h)"); ax.set_ylabel("I(pHrodo)/I(Cy5)"); ax.grid(alpha=.3); ax.legend(loc="upper left", fontsize=7)
+        cur = classify_track(P[["frame", "ratio_BA"]], cfg.risefall, dt) if len(P) else {}
+        org = self._r
+        verdict = lambda d: (CNAME.get(d.get("category"), "증가 후 감소 아님") + (" · 선별 ✔" if d.get("keep") else " · 선별 안 됨")) if d else "-"
+        ttl = f"{self._uid} | 교정 후: {verdict(cur)}" + (f" | 교정 전: {verdict(dict(category=org.category, keep=org.keep))}" if org is not None else "")
+        ax.set_title(ttl, fontsize=9); self.gfig.tight_layout(); self.gcanvas.draw_idle()
+        n_e = sum(1 for v in self._path.values() if v["status"] != "orig")
+        self.lbl.setText(f"frame {f}/{self._T} · 이 프레임: " + ({"orig": "트래커 위치 (확인 안 함)", "edit": "교정함", "ok": "확인함"}.get(self._path.get(f, {}).get("status"), "없음"))
+                         + f" · 교정·확인 {n_e}/{len(self._path)}" + (" · 저장 안 됨" if self._dirty else "")
+                         + "  — 노란 + = 트래커 위치, 초록 = 교정·확인, 하늘색 원 = 검출(클릭하면 붙음), 빈 곳 클릭 = 그 자리 측정")
+
+    # ------------------------------------------------------------ 조작
+    def _go(self, s):
+        if self._uid is None: return
+        self._f = int(np.clip(self._f + s, 1, self._T)); self._draw()
+
+    def _changed(self): self._dirty = True; self._go(1)
+
+    def _on_click(self, x, y, row):
+        from ..edits import measure_free
+        if self._uid is None: return
+        f = self._f; old = self._path.get(f)
+        if row is not None:
+            lab = int(row.roi_label); self._path[f] = dict(x_fl=float(row.x_fl), y_fl=float(row.y_fl), roi_label=lab, status="edit", **self._meas(f, lab))
+            if (old is None or old["roi_label"] != lab) and "track_uid" in row:     # 다른 입자로 바꿨으면 이후 미확인 프레임을 그 입자의 트랙으로
+                for g in [g for g, v in self._path.items() if g > f and v["status"] == "orig"]: del self._path[g]
+                for x_ in self._pts[(self._pts.track_uid == row.track_uid) & (self._pts.frame > f)].itertuples():
+                    if int(x_.frame) not in self._path:
+                        self._path[int(x_.frame)] = dict(x_fl=x_.x_fl, y_fl=x_.y_fl, roi_label=int(x_.roi_label), status="orig", **self._meas(int(x_.frame), int(x_.roi_label)))
+        else:
+            rad = float(np.nanmedian(self._orig.radius_equiv_px)) if "radius_equiv_px" in self._orig else 4.0
+            m = measure_free(self._ctx, self._src, f, x, y, rad, self._cfg.measurement)
+            self._path[f] = dict(x_fl=x, y_fl=y, roi_label=-1, status="edit", **{k: m[k] for k in ("I_A", "I_B", "ratio_BA")}); self._free = getattr(self, "_free", {}); self._free[f] = m
+        self._changed()
+
+    def _confirm(self):
+        if self._uid is None or self._f not in self._path: self._go(1); return
+        self._path[self._f]["status"] = "ok" if self._path[self._f]["status"] == "orig" else self._path[self._f]["status"]; self._changed()
+
+    def _remove(self):
+        if self._uid is None: return
+        self._path.pop(self._f, None); self._changed()
+
+    def _reset_frame(self):
+        if self._uid is None: return
+        o = self._orig[self._orig.frame == self._f]
+        if len(o): x = o.iloc[0]; self._path[self._f] = dict(x_fl=x.x_fl, y_fl=x.y_fl, roi_label=int(x.roi_label), status="orig", **self._meas(self._f, int(x.roi_label)))
+        else: self._path.pop(self._f, None)
+        self._dirty = True; self._draw()
+
+    def _end(self):
+        if self._uid is None: return
+        for g in [g for g in self._path if g > self._f]: del self._path[g]
+        self._dirty = True; self._draw()
+
+    def _revert(self):
+        from ..edits import load_edits
+        if self._uid is None: return
+        E = load_edits(self._ctx.folder); tid = int(self._uid.split("::")[-1]); E = E[E.track_id != tid]; E.to_csv(self._ctx.folder / "track_edits.csv", index=False)
+        self.lbl.setText("이 입자의 교정을 모두 취소했습니다 — [특이 입자 분류 실행]을 다시 누르면 원래 경로로 돌아갑니다"); self._dirty = False
+
+    def _save(self):
+        from ..edits import save_track, MEAS_COLS
+        from ..gt import load_gt, save_gt, now
+        if self._uid is None: return
+        tid = int(self._uid.split("::")[-1]); free = getattr(self, "_free", {}); rows = []
+        for f in sorted(self._path):
+            v = self._path[f]; r = dict(frame=f, roi_label=v["roi_label"], x_fl=v["x_fl"], y_fl=v["y_fl"], status=v["status"])
+            if v["roi_label"] < 0 and f in free: r.update({c: free[f].get(c, np.nan) for c in MEAS_COLS})
+            rows.append(r)
+        path = pd.DataFrame(rows); save_track(self._ctx.folder, tid, path)
+        gt = load_gt(self._ctx.folder); src = f"edit:{self._uid}"; gt = gt[gt.source_track != src]       # 정답에도 반영 (확인 안 한 점은 auto)
+        gid = int(gt.gt_id.max()) + 1 if len(gt) else 1
+        add = pd.DataFrame(dict(gt_id=gid, frame=path.frame, x_fl=path.x_fl, y_fl=path.y_fl, roi_label=path.roi_label,
+                                status=np.where(path.status == "orig", "auto", "ok"), source_track=src, updated=now()))
+        save_gt(self._ctx.folder, pd.concat([gt, add], ignore_index=True) if len(gt) else add)
+        from ..edits import apply_edits
+        cur = self._pts.drop(columns=[c for c in ("edited", "verified") if c in self._pts])
+        new = apply_edits(cur[cur.track_uid.str.startswith(self._uid.split("::")[0] + "::")], self._ctx.folder)
+        new = new[new.track_id == tid].assign(dataset=self._uid.split("::")[0], track_uid=self._uid)
+        self._dirty = False; self.saved.emit(self._uid, new); self._draw()
+        self.lbl.setText(self.lbl.text() + "\n저장했습니다 (track_edits.csv, ground_truth.csv). 표의 판정·신뢰도가 바로 갱신됩니다.")

@@ -17,7 +17,9 @@ def combine(dataset_dirs: dict) -> pd.DataFrame:
     for name, d in dataset_dirs.items():
         f = Path(d) / "tracks_points_A_B_HT.csv"
         if not f.exists(): continue
-        t = pd.read_csv(f); t.insert(0, "dataset", name); t.insert(1, "track_uid", f"{name}::" + t.track_id.astype(str)); parts.append(t)
+        from .edits import apply_edits
+        t = apply_edits(pd.read_csv(f), d)          # 사용자가 교정한 경로 반영
+        t.insert(0, "dataset", name); t.insert(1, "track_uid", f"{name}::" + t.track_id.astype(str)); parts.append(t)
     return pd.concat(parts, ignore_index=True) if parts else pd.DataFrame()
 
 
@@ -73,8 +75,9 @@ def _reason(r):
     return ", ".join(rs)
 
 
-def risefall(points: pd.DataFrame, prm: RiseFallParams, dt_min=20.0, groups=("inside", "outside")):
-    """points: (통합) point 표. 반환 (트랙별 분류표, 데이터셋·그룹별 분율표)."""
+def risefall(points: pd.DataFrame, prm: RiseFallParams, dt_min=20.0, groups=("inside", "outside"), perr=None):
+    """points: (통합) point 표. 반환 (트랙별 분류표, 데이터셋·그룹별 분율표).
+    points에 link_margin이 있으면 후보마다 결정 구간의 신뢰도(reliability)를 계산하고, reliable = keep & 신뢰도 ≥ min_reliability."""
     if "dataset" not in points: points = points.assign(dataset="dataset")
     if "track_uid" not in points: points = points.assign(track_uid=points.dataset + "::" + points.track_id.astype(str))
     L = points[points.group.isin(groups)]
@@ -84,6 +87,16 @@ def risefall(points: pd.DataFrame, prm: RiseFallParams, dt_min=20.0, groups=("in
     if R.empty: return R, pd.DataFrame()
     R["candidate"] = R.category.isin(["abrupt_drop", "gradual_decline"]); R["filter_result"] = R.apply(_reason, axis=1)
     for c in ["peak", "drop", "decline"]: R[f"{c}_time_h"] = (R[f"{c}_frame"] - 1) * dt_min / 60
+    R["reliability"] = np.nan; R["risky_links"] = np.nan; R["gap_links"] = np.nan
+    if "link_margin" in points:
+        from . import reliability
+        perr = perr or reliability._rates(reliability.PRIOR); byu = dict(tuple(L.groupby("track_uid")))
+        for i in R.index[R.candidate]:
+            r = R.loc[i]; dec = r.decline_frame if np.isfinite(r.decline_frame) else r.peak_frame
+            w = reliability.window_reliability(byu[r.track_uid], r.peak_frame - prm.rel_window, dec + prm.rel_window, perr, prm.rel_gap_err, prm.rel_merged_err)
+            R.loc[i, ["reliability", "risky_links", "gap_links"]] = [w["reliability"], w["risky_links"], w["gap_links"]]
+        R["reliable"] = R.keep & (R.reliability >= prm.min_reliability)
+    else: R["reliable"] = R.keep
     out = []
     for ds in list(R.dataset.unique()) + ["전체"]:
         for g in groups:
@@ -91,5 +104,6 @@ def risefall(points: pd.DataFrame, prm: RiseFallParams, dt_min=20.0, groups=("in
             out.append(dict(dataset=ds, group=g, n_tracks=n, rise=int(s.rise.sum()), candidates=int(s.candidate.sum()), kept=k,
                             kept_abrupt=int((s.keep & (s.category == "abrupt_drop")).sum()), kept_gradual=int((s.keep & (s.category == "gradual_decline")).sum()),
                             candidate_pct=s.candidate.mean() * 100 if n else np.nan, kept_pct=k / n * 100 if n else np.nan,
-                            kept_pct_ci_low=lo * 100, kept_pct_ci_high=hi * 100))
+                            kept_pct_ci_low=lo * 100, kept_pct_ci_high=hi * 100,
+                            kept_reliable=int(s.reliable.sum()), kept_reliable_pct=s.reliable.sum() / n * 100 if n else np.nan))
     return R, pd.DataFrame(out)
