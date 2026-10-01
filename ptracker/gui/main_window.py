@@ -10,7 +10,7 @@
 from __future__ import annotations
 import json
 from pathlib import Path
-import pandas as pd
+import numpy as np, pandas as pd
 from PySide6.QtCore import Qt, QUrl, QSettings
 from PySide6.QtGui import QPixmap, QDesktopServices, QAction
 from PySide6.QtWidgets import (QMainWindow, QWidget, QTabWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QPushButton, QLabel,
@@ -27,6 +27,7 @@ from ..pipeline import STAGES, STAGE_LABELS, DatasetRunner
 from ..plots import track_trace
 from .param_form import ParamForm
 from .preview_panel import PreviewPanel
+from .track_views import TrackMapView, CropViewer, TrackExplorer, DatasetContext
 from .table_model import DataFrameModel
 from .worker import start_worker
 from . import tasks
@@ -256,7 +257,10 @@ class MainWindow(QMainWindow):
         if HAS_VIDEO:
             for text, fn in [("▶ 재생", lambda: self.player.play()), ("⏸ 일시정지", lambda: self.player.pause())]:
                 b = QPushButton(text); b.clicked.connect(fn); row.addWidget(b)
-        row.addStretch(); rv.addLayout(row); sp.addWidget(right); sp.setSizes([350, 1000]); v.addWidget(sp, 1)
+        row.addStretch(); rv.addLayout(row); sp.addWidget(right); sp.setSizes([350, 1000])
+        self.res_tabs = QTabWidget(); self.res_tabs.addTab(sp, "파일 보기")
+        self.explorer = TrackExplorer(lambda: self.params.apply_to(Config())); self.res_tabs.addTab(self.explorer, "트랙 탐색 (경로·밝기 그래프)")
+        self.res_dir.currentTextChanged.connect(self.explorer.set_folder); v.addWidget(self.res_tabs, 1)
         return w
 
     def _refresh_result_dirs(self):
@@ -360,12 +364,15 @@ class MainWindow(QMainWindow):
         self.rf_table = QTableView(); self.rf_model = DataFrameModel(); self.rf_table.setModel(self.rf_model); self.rf_table.setSortingEnabled(True)
         self.rf_table.setSelectionBehavior(QAbstractItemView.SelectRows); self.rf_table.selectionModel().selectionChanged.connect(self._rf_plot_selected)
         mv.addWidget(self.rf_table, 1)
-        self.fig = Figure(figsize=(7, 3.2)); self.canvas = FigureCanvasQTAgg(self.fig); mv.addWidget(self.canvas, 1)
+        self.fig = Figure(figsize=(7, 3.2)); self.canvas = FigureCanvasQTAgg(self.fig)
+        self.rf_views = QTabWidget(); self.rf_views.addTab(self.canvas, "곡선")
+        self.rf_map = TrackMapView(); self.rf_map.trackClicked.connect(self._rf_select_uid); self.rf_views.addTab(self.rf_map, "전체 영상 위치")
+        self.rf_crop = CropViewer(); self.rf_views.addTab(self.rf_crop, "크롭 프레임"); self._rf_ctx = {}
         row = QHBoxLayout()
         b = QPushButton("선택 입자 크롭 영상 + 그래프"); b.clicked.connect(lambda: self.run_crops(False)); row.addWidget(b)
         b = QPushButton("현재 목록 전체 크롭"); b.clicked.connect(lambda: self.run_crops(True)); row.addWidget(b)
         b = QPushButton("결과 폴더 열기"); b.clicked.connect(lambda: open_path(self.rf_out.text())); row.addWidget(b); row.addStretch(); mv.addLayout(row)
-        sp.addWidget(mid); sp.setSizes([380, 1000]); v.addWidget(sp, 1)
+        sp.addWidget(mid); sp.addWidget(self.rf_views); sp.setSizes([330, 560, 720]); v.addWidget(sp, 1)
         return w
 
     def _pick_rf_csv(self):
@@ -376,7 +383,7 @@ class MainWindow(QMainWindow):
         if self._busy(): return
         if not self.rf_src.text() or not self.rf_out.text(): QMessageBox.information(self, "알림", "입력과 출력 폴더를 지정하세요."); return
         self.cfg = self.params.apply_to(self.cfg); self.cfg = self.rf_params.apply_to(self.cfg); self.params.set_config(self.cfg)
-        self.rf = {}
+        self.rf = {}; self._rf_ctx = {}
         self._start(tasks.risefall, self.rf_src.text(), self.cfg, self.rf_out.text(), self.rf, done=self._after_rf)
 
     def _after_rf(self, ok, msg):
@@ -392,6 +399,7 @@ class MainWindow(QMainWindow):
         d = d[d.keep] if s == "선별 입자만" else (d[d.candidate] if s.startswith("후보") else d)
         cols = ["track_uid", "dataset", "group", "category", "keep", "filter_result", "base", "peak", "end", "peak_time_h", "decline_time_h", "n_valid"]
         self.rf_model.set_df(d[cols].rename(columns={"base": "ratio_start", "peak": "ratio_peak", "end": "ratio_end"}))
+        self._rf_update_map()
 
     def _selected_uids(self):
         rows = sorted({i.row() for i in self.rf_table.selectionModel().selectedRows()}); df = self.rf_model.df()
@@ -402,6 +410,32 @@ class MainWindow(QMainWindow):
         if not uids or pts is None: return
         u = uids[0]; t = pts[pts.track_uid == u]; R = self.rf["R"]; r = R[R.track_uid == u].iloc[0] if u in set(R.track_uid) else None
         self.fig.clear(); ax = self.fig.add_subplot(111); track_trace(ax, t, r, show_channels=True); ax.set_title(u, fontsize=9); self.fig.tight_layout(); self.canvas.draw_idle()
+        ds = t.dataset.iloc[0]; ctx = self._rf_context(ds); self._rf_update_map(ds)
+        pk = int(r.peak_frame) if r is not None and pd.notna(r.peak_frame) else int(t.frame.min())
+        self.rf_map.select(u, frame=pk); cfg = self.params.apply_to(Config())
+        info = f"{ds} | {u.split('::')[-1]} | {r.category if r is not None else ''} {'' if r is None or r.keep else '(제외: ' + str(r.filter_result) + ')'}"
+        self.rf_crop.set_track(ctx, t, r, cfg.output.crop_half, cfg.channel.frame_interval_min, info, cfg.output.movie_fps)
+
+    def _rf_context(self, ds):
+        if ds not in self._rf_ctx:
+            d = (self.rf.get("dirs") or {}).get(ds)
+            try: self._rf_ctx[ds] = DatasetContext(d) if d else None
+            except Exception: self._rf_ctx[ds] = None   # noqa: BLE001
+        return self._rf_ctx[ds]
+
+    def _rf_update_map(self, ds=None):
+        """현재 표에 보이는 입자들(선택한 입자의 데이터셋)을 전체 영상 위에 표시. ★ = 최고점 위치."""
+        pts = self.rf.get("points"); df = self.rf_model.df()
+        if pts is None or not len(df): self.rf_map.set_tracks(pd.DataFrame()); return
+        ds = ds or (self._selected_uids()[0].split("::")[0] if self._selected_uids() else df.dataset.iloc[0])
+        sel = df[df.dataset == ds]; P = pts[pts.track_uid.isin(set(sel.track_uid))]
+        R = self.rf["R"].set_index("track_uid"); mk = {u: int(R.peak_frame[u]) for u in sel.track_uid if pd.notna(R.peak_frame.get(u))}
+        self.rf_map.set_context(self._rf_context(ds))
+        self.rf_map.set_tracks(P[["track_uid", "frame", "x_fl", "y_fl", "x_ht", "y_ht", "group"]], mk)
+
+    def _rf_select_uid(self, uid):
+        df = self.rf_model.df(); hit = np.nonzero(df.track_uid.values == uid)[0]
+        if len(hit): self.rf_table.selectRow(int(hit[0])); self.rf_table.scrollTo(self.rf_model.index(int(hit[0]), 0))
 
     def run_crops(self, all_rows):
         if self._busy() or "R" not in self.rf: return
@@ -447,5 +481,5 @@ class MainWindow(QMainWindow):
         try: self.cfg.save(p); self.settings.setValue("last_config", str(p))
         except Exception: pass   # noqa: BLE001
         if self._worker is not None: self._worker.cancel_event.set()
-        self.preview.shutdown()
+        self.preview.shutdown(); self.explorer.shutdown(); self.rf_crop.shutdown()
         super().closeEvent(e)
