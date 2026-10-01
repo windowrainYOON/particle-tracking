@@ -42,6 +42,28 @@ def measure_frame(lab, a_img, b_img, ht, dy_ht, dx_ht, S, prm: MeasurementParams
     return (rec, masks) if return_masks else rec
 
 
+def flag_merged(tr, prm: MeasurementParams):
+    """다른 입자와 합쳐지거나 가려진 시점 표시: 면적과 Cy5 총 밝기가 그 트랙의 직전 3시점 중앙값보다 함께 급증.
+    exclude_merged면 그 시점의 비율을 비웁니다 (원래 값은 ratio_BA_unfiltered)."""
+    tr = tr.sort_values(["track_id", "frame"]).copy(); g = tr.groupby("track_id")
+    integ = tr.area_px * tr.mean_intensity
+    ref_a = g.area_px.transform(lambda x: x.shift(1).rolling(3, min_periods=1).median())
+    ref_i = integ.groupby(tr.track_id).transform(lambda x: x.shift(1).rolling(3, min_periods=1).median())
+    raw = ((tr.area_px >= prm.merge_area_ratio * ref_a) & (integ >= prm.merge_int_ratio * ref_i)).fillna(False).values
+    # 급증 뒤에도 면적이 (급증 전 기준 × 배수) 이상이면 최대 merge_max_frames까지 이어서 표시
+    m = raw.copy(); tid = tr.track_id.values; area = tr.area_px.values; base = ref_a.values; i = 0; n = len(tr)
+    while i < n:
+        if raw[i]:
+            b = base[i]; j = i + 1; k = 1
+            while j < n and tid[j] == tid[i] and k < prm.merge_max_frames and area[j] >= prm.merge_area_ratio * b: m[j] = True; j += 1; k += 1
+            i = j
+        else: i += 1
+    tr["merged"] = m
+    tr["ratio_BA_unfiltered"] = tr.ratio_BA
+    if prm.exclude_merged: tr.loc[tr.merged, "ratio_BA"] = np.nan
+    return tr
+
+
 def track_summary(tr, prm: MeasurementParams, CS, dt_min, exclude_mitotic=True):
     mit_cells = set(CS[CS.mitotic].cell_id)
 
@@ -78,7 +100,7 @@ def per_cell(tr, CID, dt_min):
 
 POINT_COLUMNS = ["track_id", "group", "frame", "time_min", "label", "x", "y", "x_ht", "y_ht", "cell_id", "inside_cell", "region",
                  "on_footprint", "in_mitotic_cell", "ht_confirmed", "pat_score", "pat2_score", "pat_refined", "gate_used", "area_px", "radius_equiv_px", "eccentricity",
-                 "I_A_raw", "bg_A", "I_A", "I_B_raw", "bg_B", "I_B", "I_B_max", "ratio_BA", "ratio_BA_raw", "HT_RI_mean", "HT_RI_max",
+                 "I_A_raw", "bg_A", "I_A", "I_B_raw", "bg_B", "I_B", "I_B_max", "ratio_BA", "ratio_BA_raw", "merged", "ratio_BA_unfiltered", "HT_RI_mean", "HT_RI_max",
                  "step_ht", "cell_carried_ht", "residual_ht"]
 
 

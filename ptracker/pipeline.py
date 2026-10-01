@@ -106,8 +106,14 @@ class DatasetRunner:
         c = self.cfg; s = self.state; A = s["A"]
         df = tracking.prepare_detections(self._get("P"), self._get("reg"), s["S"], self._get("CID"), self._get("FP"), self._get("CS"), self._get("FLOW"), s["HT"])
         df = tracking.pattern_predictions(df, A, self._get("reg"), s["S"], c.detection, c.tracking, lambda f, m: self._prog("track", f * .5, m))
+        if c.tracking.appearance: df = tracking.add_ht_features(df, self._get("LAB"), s["HT"], self._get("reg"), s["S"])
         LK, AMB, PR = tracking.link_frames(df, c.tracking, lambda f, m: self._prog("track", .5 + f * .45, m))
-        TR, ng = tracking.build_tracks(df, LK, c.tracking, PR)
+        W = None; st = tracking.link_frames.last_appearance
+        if c.tracking.appearance and st:
+            W = {k: v["weight_px"] for k, v in st.items() if k in tracking.APPEARANCE}
+            (self.out / "tracking_appearance_weights.json").write_text(json.dumps(st, indent=1, ensure_ascii=False), encoding="utf-8")
+            self.log("외형 가중치 (px 환산):", {k: round(v, 3) for k, v in W.items()})
+        TR, ng = tracking.build_tracks(df, LK, c.tracking, PR, app_w=W)
         self.log(f"연결 {len(LK)}, 트랙 {TR.track_id.nunique()}, gap closing {ng}, 모호한 연결 {np.mean(AMB) * 100 if len(AMB) else 0:.1f}%")
         tr = tracking.add_motion_columns(TR, c.channel.frame_interval_min)
         self._save("tracks_raw", tr); s["tracks_raw"] = tr
@@ -117,6 +123,8 @@ class DatasetRunner:
         reg = self._get("reg"); Bal = registration.align_b(s["B"], reg); s["Bal"] = Bal
         tr = measurement.measure_rois(self._get("tracks_raw"), s["A"], Bal, s["HT"], self._get("LAB"), reg, s["S"], c.measurement,
                                       lambda f, m: self._prog("measure", f * .8, m))
+        tr = measurement.flag_merged(tr, c.measurement)
+        self.log(f"합쳐짐/가림 시점 {int(tr.merged.sum())}개 ({tr.merged.mean() * 100:.1f}%)" + (" — 비율에서 제외" if c.measurement.exclude_merged else ""))
         TS = measurement.track_summary(tr, c.measurement, self._get("CS"), c.channel.frame_interval_min, c.mitosis.enabled)
         tr = tr.drop(columns=[x for x in ["group"] if x in tr]).merge(TS[["track_id", "group"]], on="track_id")
         TS.round(5).to_csv(self.out / "tracks_summary_A_B_HT.csv", index=False)

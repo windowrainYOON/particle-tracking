@@ -135,6 +135,9 @@ def track_trace(ax, t, r=None, show_channels=False):
     tv = t.dropna(subset=["ratio_BA"]).sort_values("frame"); th = tv.time_min / 60
     ax.plot(th, tv.ratio_BA, "o-", color="tab:purple", ms=3, lw=.8, alpha=.6, label="I(pHrodo)/I(Cy5)")
     ax.plot(th, tv.ratio_BA.rolling(3, center=True, min_periods=1).median(), "k-", lw=1.8, label="3점 중앙값")
+    if "merged" in t and t.merged.astype(bool).any():          # 합쳐짐/가림 시점 (비율에서 제외됨)
+        m = t[t.merged.astype(bool)]; y = m.ratio_BA_unfiltered if "ratio_BA_unfiltered" in m else m.ratio_BA
+        ax.plot(m.time_min / 60, y, "x", color="red", ms=6, mew=1.5, label="합쳐짐/가림 (제외)")
     if r is not None and np.isfinite(getattr(r, "peak_time_h", np.nan)): ax.axvline(r.peak_time_h, color="green", ls=":", lw=1.2)
     if r is not None and np.isfinite(getattr(r, "decline_time_h", np.nan)): ax.axvline(r.decline_time_h, color="red", ls=":", lw=1.2)
     ax.axhline(0, color="gray", lw=.6); ax.set_xlabel("시간 (h)"); ax.set_ylabel("I(pHrodo)/I(Cy5)"); ax.grid(alpha=.3)

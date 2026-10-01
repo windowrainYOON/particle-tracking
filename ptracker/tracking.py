@@ -63,6 +63,56 @@ def _match(pad0, pad1, o, y, x, cy, cx, h, R, prior_sigma=None):
     return cyi + dy, cxi + dx, sc
 
 
+# ------------------------------------------------------------------ appearance (외형 특징)
+APPEARANCE = {   # 이름: (열, 변환) — 비교량: log이면 |ln(a/b)|, 아니면 |a−b|
+    "area": ("area_px", "log"), "cy5": ("mean_intensity", "log"), "ht_max": ("ht_ri_max", "lin"),
+    "ht_mean": ("ht_ri_mean", "lin"), "ecc": ("eccentricity", "lin")}
+
+
+def add_ht_features(df, LAB, HT, reg, S):
+    """트래킹 전에 검출마다 ROI의 HT RI 평균·최대 (×10⁴ 단위 그대로)를 붙입니다. 측정 단계와 같은 좌표 변환."""
+    from scipy import ndimage as ndi
+    T = LAB.shape[0]; NH, NW = HT.shape[1:]; rec = {}
+    for z in range(T):
+        lab = LAB[z]; ht = HT[z]; dy, dx = reg.dy_ht.values[z], reg.dx_ht.values[z]
+        for k, sl in enumerate(ndi.find_objects(lab), 1):
+            if sl is None: continue
+            yy, xx = np.nonzero(lab[sl] == k); yy = yy + sl[0].start; xx = xx + sl[1].start
+            hy = np.clip(np.round((yy + 0.5) * S - 0.5 + dy).astype(int), 0, NH - 1); hx = np.clip(np.round((xx + 0.5) * S - 0.5 + dx).astype(int), 0, NW - 1)
+            v = ht[hy, hx].astype(float); rec[(z + 1, k)] = (v.mean(), v.max())
+    H = pd.DataFrame([(f, l, a, b) for (f, l), (a, b) in rec.items()], columns=["frame", "label", "ht_ri_mean", "ht_ri_max"])
+    return df.drop(columns=[c for c in ["ht_ri_mean", "ht_ri_max"] if c in df]).merge(H, on=["frame", "label"], how="left")
+
+
+def _feat_diff(a, b, kind):
+    with np.errstate(divide="ignore", invalid="ignore"):
+        return np.abs(np.log(a / b)) if kind == "log" else np.abs(a - b)
+
+
+def learn_appearance(df, links, prm: TrackingParams):
+    """1차 연결 중 확실한 연결(패턴 상관 ≥ 0.9, 비용 2위와 차이 ≥ 2)에서 '같은 입자의 변화'와
+    '가장 가까운 다른 후보와의 차이'의 지수분포 척도(s_same, s_other)를 추정 → 특징별 가중치
+    w = (1/s_same − 1/s_other) (로그 가능도비). 거리도 같은 방식으로 추정해 w_dist로 나눠 px 단위 비용으로 맞춥니다."""
+    pos = df[["y_ht", "x_ht"]].values; fr = df.frame.values; tree = {}
+    L = links[(df.pat_score.values[links.a.values] >= 0.9) & (links.margin.values >= 2)] if len(links) else links
+    if len(L) < 50: return {}, {}
+    same = {k: [] for k in APPEARANCE}; other = {k: [] for k in APPEARANCE}; dsame, dother = [], []
+    for f in np.unique(fr): tree[f] = (cKDTree(pos[fr == f]), np.nonzero(fr == f)[0])
+    for a, b, pd_ in zip(L.a.values, L.b.values, L.pred_dist.values):
+        tr, ids = tree[fr[b]]; d, ii = tr.query(pos[b], k=2); o = ids[ii[1]] if len(ii) > 1 and np.isfinite(d[1]) else None
+        if o is None: continue
+        dsame.append(pd_); dother.append(np.linalg.norm(pos[o] - pos[b]) + pd_)
+        for k, (col, kind) in APPEARANCE.items():
+            same[k].append(_feat_diff(df[col].values[a], df[col].values[b], kind)); other[k].append(_feat_diff(df[col].values[a], df[col].values[o], kind))
+    s = lambda x: max(float(np.nanmean(x)), 1e-6)
+    w_dist = 1 / s(dsame) - 1 / s(dother)
+    if w_dist <= 0: return {}, {}
+    W = {k: max(0.0, (1 / s(same[k]) - 1 / s(other[k])) / w_dist) for k in APPEARANCE}
+    stats = {k: dict(s_same=s(same[k]), s_other=s(other[k]), weight_px=W[k]) for k in APPEARANCE}
+    stats["distance"] = dict(s_same=s(dsame), s_other=s(dother)); stats["n_links"] = len(dsame)
+    return W, stats
+
+
 def pattern_raw(df, A, S, det: DetectionParams, prm: TrackingParams, progress=None):
     """패턴 매칭 원시 결과 (형광 좌표). 1단계: 넓은 템플릿(입자+주변 배치).
     2단계(pattern_refine): 1단계 점수가 낮은 입자만 작은 템플릿(입자 자체)으로 더 넓게 다시 탐색 — 이웃이 제각각 움직이는 밀집 지역·빠른 이동 대비.
@@ -105,7 +155,7 @@ def pattern_predictions(df, A, reg, S, det: DetectionParams, prm: TrackingParams
 
 
 # ------------------------------------------------------------------ linking
-def cost_matrix(Aa, Bb, prm: TrackingParams, py_, px_, nb=None, gate=None):
+def cost_matrix(Aa, Bb, prm: TrackingParams, py_, px_, nb=None, gate=None, app_w=None):
     """비용 행렬. gate는 스칼라 또는 행(트랙)별 배열. 행별 gate가 넓으면 거리 비용을 gate 비율만큼 줄여
     (불확실한 트랙일수록 같은 거리의 벌점이 작음) 종료 비용과의 균형을 유지합니다."""
     gate = prm.gate if gate is None else gate
@@ -115,6 +165,12 @@ def cost_matrix(Aa, Bb, prm: TrackingParams, py_, px_, nb=None, gate=None):
     c += prm.w_cell * (Aa.cell_id.values[:, None] != Bb.cell_id.values[None])
     c += prm.w_int * np.abs(np.log(Aa.mean_intensity.values[:, None] / Bb.mean_intensity.values[None]))
     c += prm.w_area * np.abs(np.log(Aa.area_px.values[:, None] / Bb.area_px.values[None]))
+    if app_w:          # 학습된 외형 가중치 (이때 w_int·w_area 대신 사용)
+        c -= prm.w_int * np.abs(np.log(Aa.mean_intensity.values[:, None] / Bb.mean_intensity.values[None]))
+        c -= prm.w_area * np.abs(np.log(Aa.area_px.values[:, None] / Bb.area_px.values[None]))
+        for k, w in app_w.items():
+            col, kind = APPEARANCE[k]
+            if w > 0: c += prm.appearance_scale * w * np.nan_to_num(_feat_diff(Aa[col].values[:, None], Bb[col].values[None], kind), nan=0.0)
     if nb is not None:
         disp = Bb[["y_ht", "x_ht"]].values[None] - Aa[["y_ht", "x_ht"]].values[:, None]
         dev = np.linalg.norm(disp - nb[:, None, :], axis=2); ok = ~np.isnan(nb[:, 0])
@@ -144,6 +200,17 @@ def neighbour_median(Aa, disp_map, prm: TrackingParams):
 
 
 def link_frames(df, prm: TrackingParams, progress=None):
+    """외형 특징을 쓰면 2-pass: 1차 연결로 외형 가중치를 학습한 뒤 다시 연결. 반환은 _link_frames와 같고, prm에는 영향 없음."""
+    link_frames.last_appearance = None
+    if not prm.appearance or "ht_ri_max" not in df:
+        return _link_frames(df, prm, progress)
+    L1, A1, P1 = _link_frames(df, prm, (lambda f, m: progress(f * .5, "1차 " + m)) if progress else None)
+    W, stats = learn_appearance(df, L1, prm); link_frames.last_appearance = stats or None
+    if not W: return L1, A1, P1
+    return _link_frames(df, prm, (lambda f, m: progress(.5 + f * .5, "2차(외형) " + m)) if progress else None, app_w=W)
+
+
+def _link_frames(df, prm: TrackingParams, progress=None, app_w=None):
     """프레임 간 연결. 반환 (links, 프레임별 모호한 연결 비율, 검출별 예측 표 pred_y/pred_x/gate_used).
 
     velocity_model: 트랙마다 '세포 흐름을 뺀 자체 이동 속도'를 α-β(정상상태 Kalman) 필터로 추정해
@@ -163,11 +230,13 @@ def link_frames(df, prm: TrackingParams, progress=None):
             pred[ia] = np.where(w > 0, w * pat + (1 - w) * pv, pv)
             gate_used[ia] = np.where(has_u[ia], np.clip(prm.gate_k * rms[ia], prm.gate, prm.gate_max), prm.gate)
         Aa = Aa.assign(pred_y=pred[ia, 0], pred_x=pred[ia, 1]); g = gate_used[ia] if prm.velocity_model else None
-        c, d = cost_matrix(Aa, Bb, prm, "pred_y", "pred_x", gate=g); L1 = lap(c, prm.gate)          # 1차 연결
+        c, d = cost_matrix(Aa, Bb, prm, "pred_y", "pred_x", gate=g, app_w=app_w); L1 = lap(c, prm.gate)          # 1차 연결
         dm = {ia[i]: pos[Bb.idx.values[j]] - pos[ia[i]] for i, j in L1}
-        nb = neighbour_median(Aa, dm, prm); c, d = cost_matrix(Aa, Bb, prm, "pred_y", "pred_x", nb, gate=g); L1 = lap(c, prm.gate)   # 이웃 일관성 반영
+        nb = neighbour_median(Aa, dm, prm); c, d = cost_matrix(Aa, Bb, prm, "pred_y", "pred_x", nb, gate=g, app_w=app_w); L1 = lap(c, prm.gate)   # 이웃 일관성 반영
+        srt2 = np.sort(np.where(np.isfinite(c), c, 1e6), 1)
         for i, j in L1:
-            a, b = ia[i], Bb.idx.values[j]; links.append((a, b, c[i, j], d[i, j], *nb[i]))
+            a, b = ia[i], Bb.idx.values[j]; mg = (srt2[i, 1] - c[i, j]) if c.shape[1] > 1 else 1e6
+            links.append((a, b, c[i, j], d[i, j], *nb[i], mg))
             if prm.velocity_model:          # 연결된 검출로 속도·예측 오차 상태 전달
                 uo = pos[b] - pos[a] - flow[a]; al = prm.vel_alpha
                 u[b] = al * uo + (1 - al) * u[a] if has_u[a] else al * uo; has_u[b] = True
@@ -176,10 +245,10 @@ def link_frames(df, prm: TrackingParams, progress=None):
         amb.append(np.mean(np.isfinite(srt[:, 0]) & (srt[:, 1] < srt[:, 0] + 1.0)) if c.shape[1] > 1 else 0)
         if progress: progress(t / (T - 1), f"연결 {t}/{T-1}")
     P = pd.DataFrame({"idx": df.idx.values, "pred_y": pred[:, 0], "pred_x": pred[:, 1], "gate_used": gate_used})
-    return pd.DataFrame(links, columns=["a", "b", "cost", "pred_dist", "nb_dy", "nb_dx"]), np.array(amb), P
+    return pd.DataFrame(links, columns=["a", "b", "cost", "pred_dist", "nb_dy", "nb_dx", "margin"]), np.array(amb), P
 
 
-def build_tracks(df, links, prm: TrackingParams, pred=None):
+def build_tracks(df, links, prm: TrackingParams, pred=None, app_w=None):
     """프레임 간 연결 → 트랙 ID. gap closing(1프레임 누락) 포함. 반환 (tracks, n_gap_closings).
     pred: link_frames가 돌려준 검출별 예측 표(없으면 predP와 고정 gate 사용)."""
     d = df.copy()
@@ -204,7 +273,7 @@ def build_tracks(df, links, prm: TrackingParams, pred=None):
             if len(E) == 0 or len(Sx) == 0: continue
             E2 = E.assign(gy=2 * E.pred_y - E.y_ht, gx=2 * E.pred_x - E.x_ht)
             gg = E.gate_used.values * 1.3 if prm.velocity_model else prm.gate * 1.3
-            c, _ = cost_matrix(E2, Sx, prm, "gy", "gx", gate=gg); c = np.where(np.isinf(c), 1e6, c)
+            c, _ = cost_matrix(E2, Sx, prm, "gy", "gx", gate=gg, app_w=app_w); c = np.where(np.isinf(c), 1e6, c)
             for i, j in zip(*linear_sum_assignment(c)):
                 if c[i, j] < 1e6: mp[Sx.track_id.values[j]] = E.track_id.values[i]
 

@@ -89,6 +89,8 @@ class TrackingParams:
     refine_half: int = p(5, "2단계 템플릿 반폭 (형광 px)", "", min=2, max=30)
     refine_search: int = p(24, "2단계 탐색 반경 (형광 px)", "", min=2, max=80)
     refine_min_score: float = p(0.5, "2단계 최소 상관", "이 이상이면 2단계 위치 사용", min=0, max=1, step=0.05)
+    appearance: bool = p(False, "외형 특징 사용 (학습)", "HT RI·모양·크기·Cy5 밝기를 연결 비용에 추가. 가중치는 1차 연결의 확실한 연결에서 자동 학습 (2-pass)")
+    appearance_scale: float = p(1.0, "외형 비용 배율", "학습된 외형 가중치 전체에 곱하는 배율", min=0, max=5, step=0.1)
     refine_weight: float = p(0.5, "2단계 위치 가중치", "예측 = 가중치 × 2단계 위치 + (1 − 가중치) × 흐름/속도 예측", min=0, max=1, step=0.1)
 
 
@@ -99,6 +101,10 @@ class MeasurementParams:
     min_ia: float = p(5.0, "비율 계산 최소 I(Cy5)", "배경 뺀 Cy5가 이 값 이하면 비율 제외", min=0, max=1000, step=1)
     min_track: int = p(10, "장기 트랙 최소 프레임 수", "그래프·분류에 쓰는 트랙 길이 기준", min=2, max=200)
     inside_fraction: float = p(0.5, "세포 안 판정 비율", "트랙 프레임 중 이 비율 초과가 세포질 안이면 inside", min=0, max=1, step=0.05)
+    merge_area_ratio: float = p(1.8, "합쳐짐 판정: 면적 배수", "직전 3시점 중앙값보다 면적이 이 배수 이상 커지고", min=1, max=5, step=0.1)
+    merge_int_ratio: float = p(1.6, "합쳐짐 판정: Cy5 총 밝기 배수", "Cy5 총 밝기(면적×평균)도 이 배수 이상 커지면 다른 입자와 합쳐지거나 가려진 시점(merged)으로 표시", min=1, max=5, step=0.1)
+    merge_max_frames: int = p(3, "합쳐짐 최대 지속 프레임", "급증 후에도 면적이 기준 이상이면 이 프레임 수까지 merged로 표시 (더 길면 영구적 변화로 보고 표시 안 함)", min=1, max=20)
+    exclude_merged: bool = p(True, "합쳐진 시점은 비율에서 제외", "merged 시점의 I(pHrodo)/I(Cy5)를 비워 신호 튐을 막음 (원래 값은 ratio_BA_unfiltered 열에 보관)")
 
 
 @dataclass

@@ -35,3 +35,23 @@ def test_track_explorer(tmp=None):
 
 if __name__ == "__main__":
     test_track_explorer(sys.argv[1] if len(sys.argv) > 1 else None); print("OK")
+
+
+def test_annotation_panel(tmp=None):
+    from PySide6.QtWidgets import QApplication
+    from ptracker.gui.track_views import TrackExplorer
+    from ptracker.gt import load_gt
+    tmp = Path(tmp or tempfile.mkdtemp()); make(tmp / "data")
+    cfg = Config(); cfg.measurement.min_track = 4; cfg.output.make_movies = False; cfg.output.make_figures = False
+    spec = auto_group_files(list((tmp / "data").glob("*.tif")), out_root=tmp / "out")[0]
+    DatasetRunner(spec, cfg, log=lambda *a: None).run()
+    app = QApplication.instance() or QApplication([])
+    ex = TrackExplorer(lambda: cfg); ex.resize(1200, 900); ex.show(); ex.set_folder(spec.out_dir); app.processEvents()
+    ex.minlen.setValue(4); ex.table.selectRow(0); app.processEvents(); ex.bottom.setCurrentIndex(2); app.processEvents()
+    a = ex.annot; a._new(); assert a._gid == 1
+    for _ in range(3): a._mark("ok")
+    a._mark("merged"); a._evaluate()
+    gt = load_gt(spec.out_dir); assert (gt.status == "ok").sum() == 3 and (gt.status == "merged").sum() == 1
+    assert "올바른 연결" in a.lbl.text(), a.lbl.text()
+    assert "crowding" in ex.model.df().columns
+    ex.shutdown()
