@@ -317,6 +317,7 @@ class TrackExplorer(QWidget):
         self.gfig = Figure(figsize=(7, 4)); self.gcanvas = FigureCanvasQTAgg(self.gfig); self.crop = CropViewer()
         self.annot = AnnotationPanel(); self.annot.get_selected = self._selected_track
         self.bottom = QTabWidget(); self.bottom.addTab(self.gcanvas, "밝기 그래프"); self.bottom.addTab(self.crop, "크롭 프레임"); self.bottom.addTab(self.annot, "정답 표시")
+        self.lcheck = LinkCheckPanel(); self.bottom.addTab(self.lcheck, "연결 검증")
         top = QSplitter(); top.addWidget(self.table); top.addWidget(self.map); top.setSizes([520, 700])
         vs = QSplitter(Qt.Vertical); vs.addWidget(top); vs.addWidget(self.bottom); vs.setSizes([520, 360]); v.addWidget(vs, 1)
 
@@ -356,7 +357,7 @@ class TrackExplorer(QWidget):
         if gs is not None: T = T[T.group.isin([GROUP_LABELS.get(g, g) for g in gs])]
         self.model.set_df(T.sort_values("n_points", ascending=False))
         P = self._pts[self._pts.track_uid.isin(set(T.track_uid))]
-        self.annot.set_dataset(self._context(ds), self._pts_ds(ds))
+        self.annot.set_dataset(self._context(ds), self._pts_ds(ds)); self.lcheck.set_dataset(self._context(ds), self._pts_ds(ds))
         self.map.set_context(self._context(ds)); self.map.set_tracks(P[["track_uid", "frame", "x_fl", "y_fl", "x_ht", "y_ht", "group"]])
         self.info.setText(f"트랙 {len(T)}개 · 표나 영상에서 트랙을 고르면 아래에 밝기 그래프와 크롭이 표시됩니다")
 
@@ -547,7 +548,12 @@ class AnnotationPanel(QWidget):
         if len(d):
             dist, j = cKDTree(d[["x_fl", "y_fl"]].values).query([x, y])
             if dist <= 6: x, y, lab = d.x_fl.values[j], d.y_fl.values[j], int(d.roi_label.values[j])
-        self._gt = set_point(self._gt, self._gid, self._f, x, y, lab, status="ok"); self._save(); self._refresh_list(keep=self._gid); self._go(1)
+        prev = self._row(self._f); changed = lab is not None and (prev is None or int(prev.roi_label) != lab)
+        self._gt = set_point(self._gt, self._gid, self._f, x, y, lab, status="ok")
+        if changed and "track_uid" in d:          # 다른 입자로 고쳤으면 이후 미확인 점을 그 입자의 트랙으로 다시 채움
+            from ..gt import reseed_after
+            uid = d.track_uid.values[j]; self._gt = reseed_after(self._gt, self._gid, self._f, self._pts[self._pts.track_uid == uid])
+        self._save(); self._refresh_list(keep=self._gid); self._go(1)
 
     def _evaluate(self):
         from ..gt import evaluate, summary_text
@@ -557,3 +563,81 @@ class AnnotationPanel(QWidget):
         pts = pd.read_csv(p); summ, T = evaluate(pts, self._gt)
         if len(T): T.to_csv(self._ctx.folder / "ground_truth_eval.csv", index=False)
         self._eval = "[평가] " + summary_text(summ); self._draw()
+
+
+class LinkCheckPanel(QWidget):
+    """트래커가 이은 연결(특히 누락 프레임을 건너뛴 연결)의 양 끝을 나란히 보여주고 '같은 입자인지'만 답합니다.
+    Y = 같은 입자, N = 다른 입자, U = 모름, ←/→ = 이동. 결과: <결과 폴더>/link_checks.csv"""
+    HALF = 32
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        from PySide6.QtGui import QShortcut, QKeySequence
+        self._ctx = None; self._src = None; self._pts = None; self._C = None; self._i = 0
+        v = QVBoxLayout(self); row = QHBoxLayout()
+        b = QPushButton("연결 표본 만들기 (현재 결과)"); b.clicked.connect(self._make); row.addWidget(b)
+        self.nper = QSpinBox(); self.nper.setRange(3, 100); self.nper.setValue(12); self.nper.setPrefix("종류별 "); self.nper.setSuffix("개"); row.addWidget(self.nper)
+        for text, fn in [("◀ (←)", lambda: self._go(-1)), ("같은 입자 (Y)", lambda: self._answer("same")), ("다른 입자 (N)", lambda: self._answer("diff")),
+                         ("모름 (U)", lambda: self._answer("unsure")), ("(→) ▶", lambda: self._go(1))]:
+            bb = QPushButton(text); bb.clicked.connect(fn); row.addWidget(bb)
+        row.addStretch(); v.addLayout(row)
+        self.lbl = QLabel("[연결 표본 만들기]를 누르면 현재 트래킹 결과에서 연속 연결과 누락 프레임을 건너뛴 연결을 종류별로 뽑습니다.")
+        self.lbl.setWordWrap(True); v.addWidget(self.lbl)
+        self.fig = Figure(figsize=(9, 3.6)); self.canvas = FigureCanvasQTAgg(self.fig); v.addWidget(self.canvas, 1)
+        for keyseq, fn in [("Y", lambda: self._answer("same")), ("N", lambda: self._answer("diff")), ("U", lambda: self._answer("unsure")),
+                           ("Left", lambda: self._go(-1)), ("Right", lambda: self._go(1))]:
+            sc = QShortcut(QKeySequence(keyseq), self); sc.setContext(Qt.WidgetWithChildrenShortcut); sc.activated.connect(fn)
+
+    def set_dataset(self, ctx, pts):
+        from ..gt import load_checks
+        if ctx is not None and self._ctx is not None and ctx.folder == self._ctx.folder and pts is self._pts: return
+        self._ctx, self._pts, self._src = ctx, pts, None
+        if ctx is None: self._C = None; self._draw(); return
+        try: self._src = PreviewSource(ctx.spec, max_frames=8)
+        except DataUnavailable as e: self.lbl.setText(str(e))
+        self._C = load_checks(ctx.folder); pend = np.nonzero(self._C.answer.values == "")[0] if len(self._C) else []
+        self._i = int(pend[0]) if len(pend) else 0; self._draw()
+
+    def _make(self):
+        from ..gt import sample_links, save_checks, load_checks
+        if self._ctx is None or self._pts is None: return
+        old = load_checks(self._ctx.folder)
+        if len(old) and (old.answer != "").any():
+            from PySide6.QtWidgets import QMessageBox
+            if QMessageBox.question(self, "연결 표본", "이미 답한 표본이 있습니다. 새 표본으로 바꾸면 기존 답은 link_checks_old.csv로 옮깁니다. 계속할까요?") != QMessageBox.Yes: return
+            old.to_csv(self._ctx.folder / "link_checks_old.csv", index=False)
+        self._C = sample_links(self._pts.rename(columns={}), self.nper.value()); save_checks(self._ctx.folder, self._C); self._i = 0; self._draw()
+
+    def _go(self, s):
+        if self._C is None or not len(self._C): return
+        self._i = int(np.clip(self._i + s, 0, len(self._C) - 1)); self._draw()
+
+    def _answer(self, a):
+        from ..gt import save_checks, now
+        if self._C is None or not len(self._C): return
+        self._C.loc[self._i, ["answer", "updated"]] = [a, now()]; save_checks(self._ctx.folder, self._C); self._go(1)
+
+    def _draw(self):
+        from ..gt import checks_summary
+        self.fig.clear()
+        if self._C is None or not len(self._C) or self._src is None: self.canvas.draw_idle(); return
+        r = self._C.iloc[self._i]; h = self.HALF; S = self._src.S; hh = int(round(h * S)); reg = self._ctx.reg
+        axs = self.fig.subplots(1, 4)
+        for k, (ax, ch, f, x, y) in enumerate([(axs[0], "cy5", r.frame_a, r.x_a, r.y_a), (axs[1], "cy5", r.frame_b, r.x_b, r.y_b),
+                                                (axs[2], "ht", r.frame_a, r.x_a, r.y_a), (axs[3], "ht", r.frame_b, r.x_b, r.y_b)]):
+            f = int(f); ax.set_xticks([]); ax.set_yticks([])
+            if ch == "ht":
+                dy = dx = 0.0
+                if reg is not None and len(reg) >= f: dy, dx = reg.dy_ht.values[f - 1], reg.dx_ht.values[f - 1]
+                x, y, hr = (x + .5) * S - .5 + dx, (y + .5) * S - .5 + dy, hh
+            else: hr = h
+            try: im = _crop(self._src.frame(ch, f - 1), x, y, hr).astype(np.float32)
+            except DataUnavailable as e: self.lbl.setText(str(e)); return
+            lo, hi = np.percentile(im, [1, 99.7]); ax.imshow(im, cmap="gray", vmin=lo, vmax=max(hi, lo + 1))
+            ax.add_patch(Circle((hr - .5, hr - .5), 7 * (S if ch == "ht" else 1), fill=False, ec="lime", lw=1.2))
+            ax.set_title(f"{'Cy5' if ch == 'cy5' else 'HT'} frame {f}" + (" (앞)" if k % 2 == 0 else " (뒤)"), fontsize=9)
+        self.fig.tight_layout()
+        ans = {"same": "같은 입자", "diff": "다른 입자", "unsure": "모름", "": "미답"}[r.answer]
+        self.lbl.setText(f"표본 {self._i + 1}/{len(self._C)} · 프레임 {int(r.frame_a)} → {int(r.frame_b)} · 지금 답: {ans} — 초록 원 안의 두 입자가 같은 입자인가요? (Y/N/U)\n"
+                         + checks_summary(self._C))
+        self.canvas.draw_idle()

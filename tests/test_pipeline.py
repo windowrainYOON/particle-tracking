@@ -26,3 +26,14 @@ def test_end_to_end(tmp=None):
 
 if __name__ == "__main__":
     test_end_to_end(sys.argv[1] if len(sys.argv) > 1 else None)
+
+
+def test_tracking_options(tmp=None):
+    """주변 배치 비교·여러 프레임 누락 연결·외형 특징을 모두 켜고 트래킹이 끝까지 도는지."""
+    tmp = Path(tmp or tempfile.mkdtemp()); make(tmp / "data")
+    cfg = Config(); cfg.measurement.min_track = 4; cfg.output.make_movies = False; cfg.output.make_figures = False
+    cfg.tracking.constellation = True; cfg.tracking.gap_max = 3; cfg.tracking.appearance = True
+    spec = auto_group_files(list((tmp / "data").glob("*.tif")), out_root=tmp / "out")[0]
+    DatasetRunner(spec, cfg, log=lambda *a: None).run(["detect", "register", "cells", "track", "measure"])
+    import pandas as pd
+    pts = pd.read_csv(Path(spec.out_dir) / "tracks_points_A_B_HT.csv"); assert pts.track_id.nunique() > 10 and "merged" in pts

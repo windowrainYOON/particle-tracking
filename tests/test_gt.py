@@ -38,3 +38,14 @@ def test_gap_and_merged_and_truncate():
     gt = truncate(gt, gid, 2); assert gt.frame.max() == 2
     gt = set_point(gt, gid, 3, 12.0, 10.0, None, status="ok"); assert gt[gt.frame == 3].roi_label.iloc[0] == -1
     s, _ = evaluate(P, gt); assert s["link_accuracy"] == 1.0           # 직접 찍은 점도 가까운 검출에 연결
+
+
+def test_reseed_and_link_checks():
+    from ptracker.gt import reseed_after, sample_links, checks_summary
+    P = _points(); gt, gid = new_from_track(pd.DataFrame(), P[P.track_id == 1], "t1")
+    gt = set_point(gt, gid, 1, status="ok"); gt = set_point(gt, gid, 2, 41.0, 40.0, 2, status="ok")   # frame 2에서 입자 B로 고침
+    gt = reseed_after(gt, gid, 2, P[P.track_id == 2])
+    after = gt[(gt.gt_id == gid) & (gt.frame > 2)]; assert (after.roi_label == 2).all() and (after.status == "auto").all()
+    P2 = P.copy(); P2.loc[(P2.track_id == 1) & (P2.frame == 3), "track_id"] = -5          # 트랙 1에 누락 프레임(2→4) 만들기
+    C = sample_links(P2[P2.track_id >= 0], n_per=3); assert set(C.gap) == {1, 2} and (C.answer == "").all()
+    C.loc[C.gap == 2, "answer"] = "same"; assert "1프레임 누락 연결" in checks_summary(C)

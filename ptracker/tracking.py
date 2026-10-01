@@ -155,7 +155,24 @@ def pattern_predictions(df, A, reg, S, det: DetectionParams, prm: TrackingParams
 
 
 # ------------------------------------------------------------------ linking
-def cost_matrix(Aa, Bb, prm: TrackingParams, py_, px_, nb=None, gate=None, app_w=None):
+def constellation_matrix(Aa, Bb, prm: TrackingParams, finite):
+    """주변 배치 비용 (na, nb). Aa의 각 입자에 대해 같은 프레임의 가까운 이웃 con_k개(반경 con_radius)의
+    '예측 위치 기준 상대 벡터'를 구하고, 후보 j 위치에 그 벡터를 더한 곳에서 Bb의 가장 가까운 검출까지 거리(상한 con_cap)의 평균.
+    이웃이 2개 미만이면 0 (정보 없음). finite: 계산할 (i, j) 쌍 (gate 안)."""
+    out = np.zeros(finite.shape)
+    if len(Aa) < 3 or len(Bb) == 0 or not finite.any(): return out
+    P = Aa[["y_ht", "x_ht"]].values; Q = Aa[["pred_y", "pred_x"]].values; B = Bb[["y_ht", "x_ht"]].values
+    ta = cKDTree(P); tb = cKDTree(B); d, nn = ta.query(P, k=min(prm.con_k + 1, len(P)), distance_upper_bound=prm.con_radius)
+    nn = nn[:, 1:]; ok = np.isfinite(d[:, 1:])                                   # 첫 번째는 자기 자신
+    rel = np.where(ok[..., None], Q[np.where(ok, nn, 0)] - Q[:, None, :], np.nan)  # 예측 위치 기준 상대 벡터 (na, k, 2)
+    I, J = np.nonzero(finite); valid = ok[I].sum(1) >= 2
+    if not valid.any(): return out
+    I, J = I[valid], J[valid]; q = B[J][:, None, :] + rel[I]; m = ok[I]
+    e = np.full(m.shape, np.nan); dist, _ = tb.query(q[m]); e[m] = np.minimum(dist, prm.con_cap)
+    out[I, J] = np.nanmean(e, 1); return out
+
+
+def cost_matrix(Aa, Bb, prm: TrackingParams, py_, px_, nb=None, gate=None, app_w=None, extra=None):
     """비용 행렬. gate는 스칼라 또는 행(트랙)별 배열. 행별 gate가 넓으면 거리 비용을 gate 비율만큼 줄여
     (불확실한 트랙일수록 같은 거리의 벌점이 작음) 종료 비용과의 균형을 유지합니다."""
     gate = prm.gate if gate is None else gate
@@ -171,6 +188,7 @@ def cost_matrix(Aa, Bb, prm: TrackingParams, py_, px_, nb=None, gate=None, app_w
         for k, w in app_w.items():
             col, kind = APPEARANCE[k]
             if w > 0: c += prm.appearance_scale * w * np.nan_to_num(_feat_diff(Aa[col].values[:, None], Bb[col].values[None], kind), nan=0.0)
+    if extra is not None: c = c + extra
     if nb is not None:
         disp = Bb[["y_ht", "x_ht"]].values[None] - Aa[["y_ht", "x_ht"]].values[:, None]
         dev = np.linalg.norm(disp - nb[:, None, :], axis=2); ok = ~np.isnan(nb[:, 0])
@@ -230,9 +248,12 @@ def _link_frames(df, prm: TrackingParams, progress=None, app_w=None):
             pred[ia] = np.where(w > 0, w * pat + (1 - w) * pv, pv)
             gate_used[ia] = np.where(has_u[ia], np.clip(prm.gate_k * rms[ia], prm.gate, prm.gate_max), prm.gate)
         Aa = Aa.assign(pred_y=pred[ia, 0], pred_x=pred[ia, 1]); g = gate_used[ia] if prm.velocity_model else None
-        c, d = cost_matrix(Aa, Bb, prm, "pred_y", "pred_x", gate=g, app_w=app_w); L1 = lap(c, prm.gate)          # 1차 연결
+        con = None
+        if prm.constellation and prm.w_con > 0:
+            c0, _ = cost_matrix(Aa, Bb, prm, "pred_y", "pred_x", gate=g); con = prm.w_con * constellation_matrix(Aa, Bb, prm, np.isfinite(c0))
+        c, d = cost_matrix(Aa, Bb, prm, "pred_y", "pred_x", gate=g, app_w=app_w, extra=con); L1 = lap(c, prm.gate)          # 1차 연결
         dm = {ia[i]: pos[Bb.idx.values[j]] - pos[ia[i]] for i, j in L1}
-        nb = neighbour_median(Aa, dm, prm); c, d = cost_matrix(Aa, Bb, prm, "pred_y", "pred_x", nb, gate=g, app_w=app_w); L1 = lap(c, prm.gate)   # 이웃 일관성 반영
+        nb = neighbour_median(Aa, dm, prm); c, d = cost_matrix(Aa, Bb, prm, "pred_y", "pred_x", nb, gate=g, app_w=app_w, extra=con); L1 = lap(c, prm.gate)   # 이웃 일관성 반영
         srt2 = np.sort(np.where(np.isfinite(c), c, 1e6), 1)
         for i, j in L1:
             a, b = ia[i], Bb.idx.values[j]; mg = (srt2[i, 1] - c[i, j]) if c.shape[1] > 1 else 1e6
@@ -265,7 +286,9 @@ def build_tracks(df, links, prm: TrackingParams, pred=None, app_w=None):
             else: break
         k += 1
     d["track_id"] = tid; mp = {}
-    if prm.gap_closing:
+    if prm.gap_closing and prm.gap_max > 1:
+        mp = close_gaps(d, prm, app_w)
+    elif prm.gap_closing:
         T = int(d.frame.max())
         ends = d.loc[d.groupby("track_id").frame.idxmax()]; sts = d.loc[d.groupby("track_id").frame.idxmin()]
         for t in range(1, T - 1):
@@ -282,6 +305,65 @@ def build_tracks(df, links, prm: TrackingParams, pred=None, app_w=None):
         return x
     d["track_id"] = pd.factorize(d.track_id.map(root), sort=True)[0] + 1
     return d.sort_values(["track_id", "frame"]).reset_index(drop=True), len(mp)
+
+
+def close_gaps(d, prm: TrackingParams, app_w=None):
+    """끊긴 조각 다시 잇기 (u-track식). 조각 끝 e(프레임 te)와 조각 시작 s(ts, 2 ≤ ts−te ≤ gap_max+1) 후보마다
+      예측 거리 = 끝에서 앞으로 외삽(te의 다음 위치 예측으로 속도 추정)과 시작에서 뒤로 외삽(첫 이동)의 평균 오차,
+      gate = gate_used(te) × √(누락+1) (최대 gate_max×1.5), 비용 = 거리×(gate/gate_g) + 세포 불일치 + 외형 차이(끝 3시점 평균 ↔ 시작 3시점 평균)
+              + 누락 프레임당 벌점. 연결되는 후보끼리 묶음(연결 성분)마다 종료 비용(gate+2)을 둔 LAP로 1:1 최적 연결.
+    반환 {시작 조각 track_id: 끝 조각 track_id}."""
+    from scipy.sparse import coo_matrix
+    from scipy.sparse.csgraph import connected_components
+    g = d.sort_values(["track_id", "frame"]).groupby("track_id"); first = g.head(3); last = g.tail(3)
+    E = g.tail(1).set_index("track_id"); S = g.head(1).set_index("track_id")
+    fe = last.groupby("track_id"); fs = first.groupby("track_id")
+    feat = {}
+    for k, (col, kind) in APPEARANCE.items():
+        if col in d: feat[k] = (fe[col].mean(), fs[col].mean(), kind)
+    # 시작 조각의 첫 이동 (뒤로 외삽용)
+    s2 = g.nth(1).set_index("track_id") if (g.size() > 1).any() else S.iloc[:0]
+    vs = (s2[["y_ht", "x_ht"]] - S.loc[s2.index, ["y_ht", "x_ht"]].values).div(s2.frame - S.loc[s2.index, "frame"].values, axis=0)
+    ve = E[["pred_y", "pred_x"]].values - E[["y_ht", "x_ht"]].values
+    T = int(d.frame.max()); tree = {}; Sf = S.frame.values; Sp = S[["y_ht", "x_ht"]].values; Sid = S.index.values
+    for f in np.unique(Sf): tree[f] = (cKDTree(Sp[Sf == f]), np.nonzero(Sf == f)[0])
+    edges = []
+    for ei, (eid, e) in enumerate(E.iterrows()):
+        te = int(e.frame)
+        for gap in range(2, prm.gap_max + 2):
+            ts = te + gap
+            if ts > T or ts not in tree: continue
+            gg = min(e.gate_used * np.sqrt(gap), prm.gate_max * 1.5); fwd = np.array([e.y_ht, e.x_ht]) + gap * ve[ei]
+            kt, ids = tree[ts]
+            for j in kt.query_ball_point(fwd, gg + 5):
+                si = ids[j]; sid = Sid[si]
+                if sid == eid: continue
+                ps = Sp[si]; df_ = np.linalg.norm(ps - fwd)
+                if sid in vs.index and np.isfinite(vs.loc[sid]).all():
+                    df_ = 0.5 * (df_ + np.linalg.norm(ps - gap * vs.loc[sid].values - np.array([e.y_ht, e.x_ht])))
+                if df_ > gg: continue
+                c = df_ * (prm.gate / gg) + prm.w_cell * (e.cell_id != S.cell_id.values[si]) + prm.gap_penalty * (gap - 1)
+                if app_w:
+                    for k, w in app_w.items():
+                        if k in feat and w > 0:
+                            a_, b_, kind = feat[k]; c += prm.appearance_scale * w * np.nan_to_num(_feat_diff(a_[eid], b_[sid], kind))
+                else:
+                    c += prm.w_int * abs(np.log(feat["cy5"][0][eid] / feat["cy5"][1][sid])) + prm.w_area * abs(np.log(feat["area"][0][eid] / feat["area"][1][sid]))
+                edges.append((eid, sid, c))
+    if not edges: return {}
+    Ed = pd.DataFrame(edges, columns=["e", "s", "c"]).sort_values("c").drop_duplicates(["e", "s"])
+    ue, us = {v: i for i, v in enumerate(Ed.e.unique())}, {v: i for i, v in enumerate(Ed.s.unique())}
+    ne, ns = len(ue), len(us); r = Ed.e.map(ue).values; cidx = Ed.s.map(us).values + ne
+    G = coo_matrix((np.ones(len(Ed)), (r, cidx)), shape=(ne + ns, ne + ns)); _, comp = connected_components(G, directed=False)
+    Ed["comp"] = comp[r]; mp = {}; nc = prm.gate + 2
+    for _, grp in Ed.groupby("comp"):
+        es, ss = list(dict.fromkeys(grp.e)), list(dict.fromkeys(grp.s)); a, b = len(es), len(ss)
+        M = np.full((a + b, b + a), 1e6); ie = {v: i for i, v in enumerate(es)}; is_ = {v: i for i, v in enumerate(ss)}
+        for x in grp.itertuples(): M[ie[x.e], is_[x.s]] = x.c
+        M[:a, b:] = np.where(np.eye(a) > 0, nc, 1e6); M[a:, :b] = np.where(np.eye(b) > 0, nc, 1e6); M[a:, b:] = np.where(M[:a, :b].T < 1e6, 0, 1e6)
+        for i, j in zip(*linear_sum_assignment(M)):
+            if i < a and j < b and M[i, j] < 1e6: mp[ss[j]] = es[i]
+    return mp
 
 
 def add_motion_columns(tr, dt_min):

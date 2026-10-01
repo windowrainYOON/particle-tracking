@@ -55,3 +55,18 @@ def test_annotation_panel(tmp=None):
     assert "올바른 연결" in a.lbl.text(), a.lbl.text()
     assert "crowding" in ex.model.df().columns
     ex.shutdown()
+
+
+def test_link_check_panel(tmp=None):
+    from PySide6.QtWidgets import QApplication
+    from ptracker.gui.track_views import TrackExplorer
+    from ptracker.gt import load_checks
+    tmp = Path(tmp or tempfile.mkdtemp()); make(tmp / "data")
+    cfg = Config(); cfg.measurement.min_track = 4; cfg.output.make_movies = False; cfg.output.make_figures = False
+    spec = auto_group_files(list((tmp / "data").glob("*.tif")), out_root=tmp / "out")[0]
+    DatasetRunner(spec, cfg, log=lambda *a: None).run()
+    app = QApplication.instance() or QApplication([])
+    ex = TrackExplorer(lambda: cfg); ex.resize(1200, 900); ex.show(); ex.set_folder(spec.out_dir); app.processEvents()
+    ex.bottom.setCurrentIndex(3); app.processEvents(); lc = ex.lcheck; lc._make(); assert len(lc._C) > 0
+    lc._answer("same"); lc._answer("diff"); C = load_checks(spec.out_dir); assert (C.answer != "").sum() == 2
+    assert "연결 검증 결과" in lc.lbl.text(); ex.shutdown()

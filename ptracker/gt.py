@@ -61,6 +61,17 @@ def set_point(gt, gid, frame, x=None, y=None, label=None, status="ok"):
     return gt
 
 
+def reseed_after(gt, gid, frame, t: pd.DataFrame):
+    """frame에서 다른 입자로 고친 뒤: 그 뒤의 '미확인(auto)' 점을 새로 고른 입자의 트래커 트랙 t(그 프레임 이후)로 바꿉니다.
+    이미 확인한 점은 그대로 둡니다."""
+    keep = ~((gt.gt_id == gid) & (gt.frame > frame) & (gt.status == "auto"))
+    done = set(gt[(gt.gt_id == gid) & (gt.frame > frame)].frame) - set(gt[~keep].frame)
+    t = t[(t.frame > frame) & ~t.frame.isin(done)]; src = gt.loc[gt.gt_id == gid, "source_track"].iloc[0]
+    rows = pd.DataFrame(dict(gt_id=gid, frame=t.frame.values.astype(int), x_fl=t.x_fl.values, y_fl=t.y_fl.values, roi_label=t.roi_label.values.astype(int),
+                             status="auto", source_track=src, updated=now()))
+    return pd.concat([gt[keep], rows], ignore_index=True) if len(rows) else gt[keep].reset_index(drop=True)
+
+
 def truncate(gt, gid, frame):
     """정답 궤적을 이 프레임 다음부터 지웁니다 (여기서 끝)."""
     return gt[~((gt.gt_id == gid) & (gt.frame > frame))].reset_index(drop=True)
@@ -130,3 +141,40 @@ def summary_text(s: dict) -> str:
     if "merged_true" in s:
         t += f"\n  합쳐짐 표시: 정답 {s['merged_true']}개, 트래커 표시 {s['merged_flagged']}개 → 정밀도 {f(s['merged_precision'])}, 재현율 {f(s['merged_recall'])}"
     return t
+
+
+# ------------------------------------------------------------------ 연결 검증 (누락 연결이 맞는지 표본 확인)
+CHECK_FILE = "link_checks.csv"
+CHECK_COLS = ["check_id", "track_id", "gap", "frame_a", "label_a", "x_a", "y_a", "frame_b", "label_b", "x_b", "y_b", "answer", "updated"]
+
+
+def sample_links(points: pd.DataFrame, n_per=12, seed=0) -> pd.DataFrame:
+    """트래커 결과에서 연결 표본을 뽑습니다: 누락 프레임 수(gap−1)별로 n_per개, 대조로 연속 연결 n_per개. 순서는 섞어 둡니다."""
+    t = points.sort_values(["track_id", "frame"]); g = t.groupby("track_id"); nx = g.shift(-1)
+    L = pd.DataFrame(dict(track_id=t.track_id.values, gap=(nx.frame - t.frame).values, frame_a=t.frame.values, label_a=t.roi_label.values,
+                          x_a=t.x_fl.values, y_a=t.y_fl.values, frame_b=nx.frame.values, label_b=nx.roi_label.values, x_b=nx.x_fl.values, y_b=nx.y_fl.values)).dropna()
+    rng = np.random.default_rng(seed); parts = []
+    for gap, d in L.groupby(L.gap.clip(upper=4)):
+        parts.append(d.iloc[rng.permutation(len(d))[:n_per]])
+    S = pd.concat(parts).sample(frac=1, random_state=seed).reset_index(drop=True)
+    for c in ["gap", "frame_a", "label_a", "frame_b", "label_b", "track_id"]: S[c] = S[c].astype(int)
+    S.insert(0, "check_id", np.arange(1, len(S) + 1)); S["answer"] = ""; S["updated"] = ""
+    return S[CHECK_COLS]
+
+
+def load_checks(folder):
+    f = Path(folder) / CHECK_FILE
+    return pd.read_csv(f, keep_default_na=False) if f.exists() else pd.DataFrame(columns=CHECK_COLS)
+
+
+def save_checks(folder, C): C.to_csv(Path(folder) / CHECK_FILE, index=False)
+
+
+def checks_summary(C: pd.DataFrame) -> str:
+    if not len(C): return "표본이 없습니다"
+    lines = []
+    for gap, d in C.groupby("gap"):
+        a = d[d.answer.isin(["same", "diff"])]; n = len(a); k = int((a.answer == "same").sum())
+        nm = "연속 연결(대조)" if gap == 1 else f"{int(gap) - 1}프레임 누락 연결"
+        lines.append(f"  {nm}: 확인 {n}/{len(d)} → 같은 입자 {k}/{n}" + (f" ({k / n * 100:.0f}%)" if n else "") + f", 모름 {int((d.answer == 'unsure').sum())}")
+    return "연결 검증 결과\n" + "\n".join(lines)
