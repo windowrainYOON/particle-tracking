@@ -60,6 +60,7 @@ tracking:
   w_con: 0.5
   gap_max: 1
   gap_penalty: 1.0
+  learned_model: ''
   appearance: true
   appearance_scale: 1.0
   refine_weight: 0.5
