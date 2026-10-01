@@ -172,13 +172,46 @@ def constellation_matrix(Aa, Bb, prm: TrackingParams, finite):
     out[I, J] = np.nanmean(e, 1); return out
 
 
-def cost_matrix(Aa, Bb, prm: TrackingParams, py_, px_, nb=None, gate=None, app_w=None, extra=None):
+# ------------------------------------------------------------------ 정답으로 학습한 연결 비용 (learn.py)
+LEARN_FEATURES = ["d", "d2", "area", "cy5", "ht_max", "ht_mean", "ecc", "cell", "nb", "con"]
+
+
+def pair_features(Aa, Bb, d, nb=None, con=None):
+    """학습 비용용 특징 행렬 (이름 → (na, nb)). d = 예측 위치와의 거리(HT px). 트래킹과 학습이 같은 함수를 씁니다."""
+    def diff(col, kind, scale=1.0):
+        if col not in Aa or col not in Bb: return np.zeros(d.shape)
+        return np.nan_to_num(_feat_diff(Aa[col].values[:, None].astype(float), Bb[col].values[None].astype(float), kind), nan=0.0) / scale
+    F = {"d": d, "d2": (d / 10) ** 2, "area": diff("area_px", "log"), "cy5": diff("mean_intensity", "log"),
+         "ht_max": diff("ht_ri_max", "lin", 100), "ht_mean": diff("ht_ri_mean", "lin", 100), "ecc": diff("eccentricity", "lin"),
+         "cell": (Aa.cell_id.values[:, None] != Bb.cell_id.values[None]).astype(float), "nb": np.zeros(d.shape), "con": np.zeros(d.shape)}
+    if nb is not None:
+        disp = Bb[["y_ht", "x_ht"]].values[None] - Aa[["y_ht", "x_ht"]].values[:, None]
+        dev = np.linalg.norm(disp - np.nan_to_num(nb)[:, None, :], axis=2); F["nb"] = np.where(np.isnan(nb[:, :1]), 0.0, dev)
+    if con is not None: F["con"] = con
+    return F
+
+
+def load_learned(prm: TrackingParams):
+    """prm.learned_model 파일의 가중치(px 단위, d = 1). 없거나 비어 있으면 None."""
+    import json, os
+    p = (prm.learned_model or "").strip()
+    if not p or not os.path.exists(p): return None
+    m = json.load(open(p, encoding="utf-8")); return {**m["weights_px"], "__scale__": float(m.get("scale", 1.0))}
+
+
+def cost_matrix(Aa, Bb, prm: TrackingParams, py_, px_, nb=None, gate=None, app_w=None, extra=None, learned=None, con_raw=None):
     """비용 행렬. gate는 스칼라 또는 행(트랙)별 배열. 행별 gate가 넓으면 거리 비용을 gate 비율만큼 줄여
     (불확실한 트랙일수록 같은 거리의 벌점이 작음) 종료 비용과의 균형을 유지합니다."""
     gate = prm.gate if gate is None else gate
     g = np.broadcast_to(np.asarray(gate, float), (len(Aa),))[:, None]
     d = np.linalg.norm(np.stack([Aa[py_].values, Aa[px_].values], 1)[:, None] - Bb[["y_ht", "x_ht"]].values[None], axis=2)
     c = d * (prm.gate / g) if np.ndim(gate) else d.copy()
+    if learned:          # 정답으로 학습한 비용 (거리 항은 위의 적응형 gate 비율 그대로)
+        F = pair_features(Aa, Bb, d, nb, con_raw)
+        for k, w in learned.items():
+            if k not in ("d", "__scale__") and w > 0: c = c + w * F[k]
+        c = c * learned.get("__scale__", 1.0); c[d > g] = np.inf
+        return c, d
     c += prm.w_cell * (Aa.cell_id.values[:, None] != Bb.cell_id.values[None])
     c += prm.w_int * np.abs(np.log(Aa.mean_intensity.values[:, None] / Bb.mean_intensity.values[None]))
     c += prm.w_area * np.abs(np.log(Aa.area_px.values[:, None] / Bb.area_px.values[None]))
@@ -220,6 +253,8 @@ def neighbour_median(Aa, disp_map, prm: TrackingParams):
 def link_frames(df, prm: TrackingParams, progress=None):
     """외형 특징을 쓰면 2-pass: 1차 연결로 외형 가중치를 학습한 뒤 다시 연결. 반환은 _link_frames와 같고, prm에는 영향 없음."""
     link_frames.last_appearance = None
+    learned = load_learned(prm)
+    if learned: return _link_frames(df, prm, progress, learned=learned)
     if not prm.appearance or "ht_ri_max" not in df:
         return _link_frames(df, prm, progress)
     L1, A1, P1 = _link_frames(df, prm, (lambda f, m: progress(f * .5, "1차 " + m)) if progress else None)
@@ -228,7 +263,7 @@ def link_frames(df, prm: TrackingParams, progress=None):
     return _link_frames(df, prm, (lambda f, m: progress(.5 + f * .5, "2차(외형) " + m)) if progress else None, app_w=W)
 
 
-def _link_frames(df, prm: TrackingParams, progress=None, app_w=None):
+def _link_frames(df, prm: TrackingParams, progress=None, app_w=None, learned=None):
     """프레임 간 연결. 반환 (links, 프레임별 모호한 연결 비율, 검출별 예측 표 pred_y/pred_x/gate_used).
 
     velocity_model: 트랙마다 '세포 흐름을 뺀 자체 이동 속도'를 α-β(정상상태 Kalman) 필터로 추정해
@@ -248,12 +283,14 @@ def _link_frames(df, prm: TrackingParams, progress=None, app_w=None):
             pred[ia] = np.where(w > 0, w * pat + (1 - w) * pv, pv)
             gate_used[ia] = np.where(has_u[ia], np.clip(prm.gate_k * rms[ia], prm.gate, prm.gate_max), prm.gate)
         Aa = Aa.assign(pred_y=pred[ia, 0], pred_x=pred[ia, 1]); g = gate_used[ia] if prm.velocity_model else None
-        con = None
-        if prm.constellation and prm.w_con > 0:
-            c0, _ = cost_matrix(Aa, Bb, prm, "pred_y", "pred_x", gate=g); con = prm.w_con * constellation_matrix(Aa, Bb, prm, np.isfinite(c0))
-        c, d = cost_matrix(Aa, Bb, prm, "pred_y", "pred_x", gate=g, app_w=app_w, extra=con); L1 = lap(c, prm.gate)          # 1차 연결
+        con = con_raw = None
+        if (prm.constellation and prm.w_con > 0) or (learned and learned.get("con", 0) > 0):
+            c0, _ = cost_matrix(Aa, Bb, prm, "pred_y", "pred_x", gate=g); con_raw = constellation_matrix(Aa, Bb, prm, np.isfinite(c0))
+            if not learned: con = prm.w_con * con_raw
+        kw = dict(gate=g, app_w=app_w, extra=con, learned=learned, con_raw=con_raw)
+        c, d = cost_matrix(Aa, Bb, prm, "pred_y", "pred_x", **kw); L1 = lap(c, prm.gate)          # 1차 연결
         dm = {ia[i]: pos[Bb.idx.values[j]] - pos[ia[i]] for i, j in L1}
-        nb = neighbour_median(Aa, dm, prm); c, d = cost_matrix(Aa, Bb, prm, "pred_y", "pred_x", nb, gate=g, app_w=app_w, extra=con); L1 = lap(c, prm.gate)   # 이웃 일관성 반영
+        nb = neighbour_median(Aa, dm, prm); c, d = cost_matrix(Aa, Bb, prm, "pred_y", "pred_x", nb, **kw); L1 = lap(c, prm.gate)   # 이웃 일관성 반영
         srt2 = np.sort(np.where(np.isfinite(c), c, 1e6), 1)
         for i, j in L1:
             a, b = ia[i], Bb.idx.values[j]; mg = (srt2[i, 1] - c[i, j]) if c.shape[1] > 1 else 1e6
@@ -296,7 +333,7 @@ def build_tracks(df, links, prm: TrackingParams, pred=None, app_w=None):
             if len(E) == 0 or len(Sx) == 0: continue
             E2 = E.assign(gy=2 * E.pred_y - E.y_ht, gx=2 * E.pred_x - E.x_ht)
             gg = E.gate_used.values * 1.3 if prm.velocity_model else prm.gate * 1.3
-            c, _ = cost_matrix(E2, Sx, prm, "gy", "gx", gate=gg, app_w=app_w); c = np.where(np.isinf(c), 1e6, c)
+            c, _ = cost_matrix(E2, Sx, prm, "gy", "gx", gate=gg, app_w=app_w, learned=load_learned(prm)); c = np.where(np.isinf(c), 1e6, c)
             for i, j in zip(*linear_sum_assignment(c)):
                 if c[i, j] < 1e6: mp[Sx.track_id.values[j]] = E.track_id.values[i]
 

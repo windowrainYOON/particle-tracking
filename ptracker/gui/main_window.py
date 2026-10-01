@@ -204,6 +204,10 @@ class MainWindow(QMainWindow):
         self.params.sectionChanged.connect(self.preview.set_section); self.preview.set_section(self.params.current_section())
         return w
 
+    def _apply_learned(self, path):
+        self.params._widgets[("tracking", "learned_model")].setText(path); self.cfg = self.params.apply_to(self.cfg)
+        self.log(f"학습된 연결 모델을 지정했습니다: {path} — 트래킹 → 측정 단계를 다시 실행하면 반영됩니다")
+
     def _specs_changed(self):
         if hasattr(self, "preview"):
             try: self.preview.set_specs(self._specs())
@@ -261,6 +265,9 @@ class MainWindow(QMainWindow):
         self.res_tabs = QTabWidget(); self.res_tabs.addTab(sp, "파일 보기")
         self.explorer = TrackExplorer(lambda: self.params.apply_to(Config())); self.res_tabs.addTab(self.explorer, "트랙 탐색 (경로·밝기 그래프)")
         self.res_dir.currentTextChanged.connect(self.explorer.set_folder); v.addWidget(self.res_tabs, 1)
+        self.explorer.annot.on_trained = self._apply_learned
+        base_folders = self.explorer.annot.get_gt_folders
+        self.explorer.annot.get_gt_folders = lambda: [self.tbl.item(r, 4).text() for r in range(self.tbl.rowCount())] + base_folders()
         return w
 
     def _refresh_result_dirs(self):

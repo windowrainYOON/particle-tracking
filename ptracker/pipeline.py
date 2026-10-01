@@ -106,7 +106,7 @@ class DatasetRunner:
         c = self.cfg; s = self.state; A = s["A"]
         df = tracking.prepare_detections(self._get("P"), self._get("reg"), s["S"], self._get("CID"), self._get("FP"), self._get("CS"), self._get("FLOW"), s["HT"])
         df = tracking.pattern_predictions(df, A, self._get("reg"), s["S"], c.detection, c.tracking, lambda f, m: self._prog("track", f * .5, m))
-        if c.tracking.appearance: df = tracking.add_ht_features(df, self._get("LAB"), s["HT"], self._get("reg"), s["S"])
+        if c.tracking.appearance or tracking.load_learned(c.tracking): df = tracking.add_ht_features(df, self._get("LAB"), s["HT"], self._get("reg"), s["S"])
         LK, AMB, PR = tracking.link_frames(df, c.tracking, lambda f, m: self._prog("track", .5 + f * .45, m))
         W = None; st = tracking.link_frames.last_appearance
         if c.tracking.appearance and st:

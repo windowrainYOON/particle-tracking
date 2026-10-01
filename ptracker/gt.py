@@ -178,3 +178,66 @@ def checks_summary(C: pd.DataFrame) -> str:
         nm = "연속 연결(대조)" if gap == 1 else f"{int(gap) - 1}프레임 누락 연결"
         lines.append(f"  {nm}: 확인 {n}/{len(d)} → 같은 입자 {k}/{n}" + (f" ({k / n * 100:.0f}%)" if n else "") + f", 모름 {int((d.answer == 'unsure').sum())}")
     return "연결 검증 결과\n" + "\n".join(lines)
+
+
+# ------------------------------------------------------------------ 정답 표시할 트랙 추천
+RECO_FILE = "gt_recommended.csv"
+RECO_REASONS = {"crowded": "밀집 지역", "merged": "합쳐짐/가림 시점 있음", "gap": "누락 프레임을 건너뛴 연결 있음", "lowpat": "패턴 상관 낮은 구간 많음",
+                "risefall": "특이 입자(증가 후 감소) 후보", "random": "무작위 대조"}
+
+
+def recommend_tracks(points: pd.DataFrame, gt: pd.DataFrame | None = None, n=25, min_len=12, seed=0, spacing=40.0):
+    """정답 표시할 트랙을 고릅니다. 어려운 경우를 고루: 밀집 8, 합쳐짐 5, 누락 연결 4, 패턴 상관 낮음 3, 특이 입자 후보 3, 무작위 2 (비율은 n에 맞춤).
+    이미 정답이 있는 트랙과 정답 점이 들어 있는 트랙은 빼고, 서로 spacing px 이상 떨어진 트랙만 고릅니다."""
+    from .analysis import classify_track
+    from .config import RiseFallParams
+    P = points.copy(); t = P.sort_values(["track_id", "frame"]); g = t.groupby("track_id")
+    S = g.agg(n=("frame", "size"), start=("frame", "min"), end=("frame", "max"), x=("x_fl", "mean"), y=("y_fl", "mean"),
+              group=("group", "first") if "group" in P else ("frame", "size"))
+    S = S[S.n >= min_len]
+    if "group" in P: S = S[S.group.isin(["inside", "outside"])]
+    xy = P[["x_ht", "y_ht"]].values; crowd = np.zeros(len(P))
+    for f, idx in P.groupby("frame").indices.items():
+        crowd[idx] = [len(k) - 1 for k in cKDTree(xy[idx]).query_ball_point(xy[idx], 10)]
+    P["crowd"] = crowd; S["crowded"] = P.groupby("track_id").crowd.mean()
+    if "merged" not in P and "I_A_raw" in P:          # 옛 결과: 면적·Cy5 총 밝기 급증으로 합쳐짐 추정 (측정 단계와 같은 기준)
+        tt = P.sort_values(["track_id", "frame"]); integ = tt.area_px * tt.I_A_raw; gg = tt.groupby("track_id")
+        ra = gg.area_px.transform(lambda x: x.shift(1).rolling(3, min_periods=1).median()); ri = integ.groupby(tt.track_id).transform(lambda x: x.shift(1).rolling(3, min_periods=1).median())
+        P.loc[tt.index, "merged"] = ((tt.area_px >= 1.8 * ra) & (integ >= 1.6 * ri)).values
+    S["merged"] = P.groupby("track_id").merged.sum() if "merged" in P else 0
+    S["gap"] = (g.frame.diff() > 1).groupby(t.track_id).sum()
+    S["lowpat"] = (P.pat_score < 0.5).groupby(P.track_id).mean() if "pat_score" in P else 0
+    if "ratio_BA" in P:
+        prm = RiseFallParams(); cand = {}
+        for tid, s in t[t.track_id.isin(S.index)].groupby("track_id"):
+            cand[tid] = float(classify_track(s, prm)["category"] in ("abrupt_drop", "gradual_decline"))
+        S["risefall"] = pd.Series(cand)
+    else: S["risefall"] = 0
+    S = S.fillna(0)
+    if gt is not None and len(gt):          # 이미 정답이 있는 트랙 제외
+        done = {int(str(u).split("::")[-1]) for u in gt.source_track.dropna() if str(u).split("::")[-1].isdigit()}
+        key = P.set_index(["frame", "roi_label"]).track_id; key = key[~key.index.duplicated()]
+        done |= {int(key[(int(f), int(l))]) for f, l in zip(gt.frame, gt.roi_label) if (int(f), int(l)) in key.index}
+        S = S[~S.index.isin(done)]
+    quota = dict(crowded=8, merged=5, gap=4, lowpat=3, risefall=3, random=2); tot = sum(quota.values())
+    quota = {k: max(1, round(v * n / tot)) for k, v in quota.items()}
+    rng = np.random.default_rng(seed); chosen = []; pos = []
+
+    def ok(tid):
+        if tid in [c[0] for c in chosen]: return False
+        p = S.loc[tid, ["x", "y"]].values.astype(float)
+        return all(np.hypot(*(p - q)) >= spacing for q in pos)
+    for reason, k in quota.items():
+        if reason == "random": order = S.index[rng.permutation(len(S))]
+        else:
+            col = S[reason]; order = col[col > 0].sort_values(ascending=False).index
+        for tid in order:
+            if sum(1 for c in chosen if c[1] == reason) >= k or len(chosen) >= n: break
+            if ok(tid): chosen.append((tid, reason)); pos.append(S.loc[tid, ["x", "y"]].values.astype(float))
+    hard = (S.crowded / max(S.crowded.max(), 1e-9) + S.gap / max(S.gap.max(), 1) + S.lowpat).sort_values(ascending=False)
+    for tid in hard.index:                     # 모자라면 어려운 순서로 채움
+        if len(chosen) >= n: break
+        if ok(tid): chosen.append((tid, "crowded" if S.crowded[tid] >= S.crowded.median() else "gap")); pos.append(S.loc[tid, ["x", "y"]].values.astype(float))
+    R = pd.DataFrame([dict(track_id=int(tid), reason=RECO_REASONS[r], n_points=int(S.n[tid]), start=int(S.start[tid]), end=int(S.end[tid]),
+                           crowding=round(float(S.crowded[tid]), 2), merged=int(S.merged[tid]), gaps=int(S.gap[tid])) for tid, r in chosen])
+    return R
