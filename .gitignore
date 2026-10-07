@@ -15,3 +15,6 @@ dist/
 
 # 개인 분석 노트 (미발표 결과 포함)
 NOTES.md
+
+# 배포용 DMG (build_dmg.sh로 다시 만듦)
+*.dmg

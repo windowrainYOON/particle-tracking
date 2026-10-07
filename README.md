@@ -4,6 +4,8 @@ Cy5(내부 대조) · pHrodo(pH 센서) · HT(holotomography z-projection) 타�
 입자를 검출·추적하고, 입자별 **I(pHrodo)/I(Cy5)** 변화를 세포 안/밖으로 나눠 분석하는 macOS용 GUI 프로그램입니다.
 그래프·영상 출력, 여러 데이터셋 통합, 특이 입자(비율이 한 번 증가했다가 감소·유지되는 입자) 색인과 크롭 영상까지 포함합니다.
 
+> **처음 쓰는 분**: [사용 방법](docs/사용방법.md) · [설치 방법](docs/설치방법.md) · [빌드 방법(앱·DMG)](docs/빌드방법.md)
+
 ---
 
 ## 1. 설치와 실행 (macOS)
@@ -19,7 +21,7 @@ Cy5(내부 대조) · pHrodo(pH 센서) · HT(holotomography z-projection) 타�
      python3 -m venv .venv && ./.venv/bin/pip install -r requirements.txt
      ./.venv/bin/python -m ptracker
      ```
-4. (선택) 독립 실행 앱: `./build_mac_app.sh` → `dist/ParticleTracker.app`을 만들고 **`/Applications/ParticleTracker.app`으로 설치**합니다 (Dock에 끌어다 놓아 쓰면 됩니다. 설치를 건너뛰려면 `--no-install`). 앱은 Python과 라이브러리를 모두 담고 있어 어디로 옮겨도 동작하고, 설정은 홈 폴더에 저장되므로 다시 빌드해 덮어써도 유지됩니다. 직접 빌드한 앱은 바로 열리지만, 다른 컴퓨터로 복사(AirDrop·다운로드)하면 처음 한 번은 **우클릭 → 열기**가 필요합니다. 아이콘을 다시 만들려면 `./.venv/bin/python tools/make_icon.py`.
+4. (선택) 독립 실행 앱: `./build_mac_app.sh` (배포용 DMG는 `./build_dmg.sh`, [빌드 방법](docs/빌드방법.md)) → `dist/ParticleTracker.app`을 만들고 **`/Applications/ParticleTracker.app`으로 설치**합니다 (Dock에 끌어다 놓아 쓰면 됩니다. 설치를 건너뛰려면 `--no-install`). 앱은 Python과 라이브러리를 모두 담고 있어 어디로 옮겨도 동작하고, 설정은 홈 폴더에 저장되므로 다시 빌드해 덮어써도 유지됩니다. 직접 빌드한 앱은 바로 열리지만, 다른 컴퓨터로 복사(AirDrop·다운로드)하면 처음 한 번은 **우클릭 → 열기**가 필요합니다. 아이콘을 다시 만들려면 `./.venv/bin/python tools/make_icon.py`.
 
 필요 메모리: 1464×1464×38 프레임 데이터셋 1개당 약 3–4 GB. 처리 시간은 데이터셋당 약 5–10분(영상 포함).
 
