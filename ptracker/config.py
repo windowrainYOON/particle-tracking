@@ -15,11 +15,14 @@ def p(default, label: str, help: str = "", **kw):
     return field(default=default, metadata=dict(label=label, help=help, **kw))
 
 
+_OLD_KEYS = {"cy5_keyword": "reference_keyword", "phrodo_keyword": "measure_keyword", "ht_keyword": "ri_keyword"}   # 1.8 이전 YAML
+
+
 @dataclass
 class ChannelParams:
-    cy5_keyword: str = p("Cy5", "Cy5(A) 파일 키워드", "파일명에 이 문자열이 있으면 A 채널(ROI 검출용 internal control)로 인식")
-    phrodo_keyword: str = p("pHrodo", "pHrodo(B) 파일 키워드", "파일명에 이 문자열이 있으면 B 채널(pH 센서)로 인식")
-    ht_keyword: str = p("HT", "HT 파일 키워드", "파일명에 이 문자열이 있으면 holotomography(z-projection)로 인식")
+    measure_keyword: str = p("pHrodo", "measure(B) tif 파일 키워드", "tif 파일명에 이 문자열이 있으면 measure 역할(측정 대상 형광)로 인식. TCF는 채널을 직접 할당")
+    reference_keyword: str = p("Cy5", "reference(A) tif 파일 키워드", "tif 파일명에 이 문자열이 있으면 reference 역할(ROI 검출용 internal control)로 인식")
+    ri_keyword: str = p("HT", "RI tif 파일 키워드", "tif 파일명에 이 문자열이 있으면 RI 역할(굴절률 z-projection)로 인식")
     frame_interval_min: float = p(20.0, "프레임 간격 (분)", "타임랩스 촬영 간격", min=0.1, max=1440, step=1)
 
 
@@ -34,17 +37,17 @@ class DetectionParams:
 
 @dataclass
 class RegistrationParams:
-    fl_ht_search: int = p(8, "형광→HT 탐색 범위 (HT px)", "프레임별 이동량 탐색 반경", min=1, max=40)
-    ab_search: int = p(3, "Cy5↔pHrodo 탐색 범위 (px)", "", min=0, max=20)
-    fl_ht_min_corr: float = p(0.5, "형광→HT 최소 상관", "이보다 낮은 프레임은 다른 프레임 이동량 중앙값 사용", min=0, max=1, step=0.05)
-    ab_min_corr: float = p(0.3, "Cy5↔pHrodo 최소 상관", "", min=0, max=1, step=0.05)
+    fl_ht_search: int = p(8, "형광→RI 탐색 범위 (RI px)", "프레임별 이동량 탐색 반경", min=1, max=40)
+    ab_search: int = p(3, "reference↔measure 탐색 범위 (px)", "", min=0, max=20)
+    fl_ht_min_corr: float = p(0.5, "형광→RI 최소 상관", "이보다 낮은 프레임은 다른 프레임 이동량 중앙값 사용", min=0, max=1, step=0.05)
+    ab_min_corr: float = p(0.3, "reference↔measure 최소 상관", "", min=0, max=1, step=0.05)
 
 
 @dataclass
 class CellParams:
-    open_radius: int = p(5, "입자 제거 opening 반경 (px)", "HT에서 세포 몸체 영상을 만들 때 입자를 지우는 크기", min=1, max=30)
+    open_radius: int = p(5, "입자 제거 opening 반경 (px)", "RI 영상에서 세포 몸체 영상을 만들 때 입자를 지우는 크기", min=1, max=30)
     smooth_sigma: float = p(3.0, "세포 영상 평활화 σ", "", min=0, max=20, step=0.5)
-    min_cell_area: int = p(3000, "최소 세포 면적 (HT px)", "", min=100, max=200000, step=100)
+    min_cell_area: int = p(3000, "최소 세포 면적 (RI px)", "", min=100, max=200000, step=100)
     id_overlap: float = p(0.3, "세포 ID 연결 최소 겹침 비율", "다음 프레임 세포가 이 비율 이상 겹치면 같은 ID", min=0.05, max=1, step=0.05)
     flow_attachment: float = p(10.0, "optical flow attachment", "TV-L1 데이터 항 가중치", min=1, max=100, step=1)
 
@@ -69,7 +72,7 @@ class MitosisParams:
 
 @dataclass
 class TrackingParams:
-    gate: float = p(10.0, "gate (HT px)", "예측 위치에서 이 거리 밖 후보는 연결 불가", min=1, max=50, step=0.5)
+    gate: float = p(10.0, "gate (RI px)", "예측 위치에서 이 거리 밖 후보는 연결 불가", min=1, max=50, step=0.5)
     w_cell: float = p(2.0, "세포 불일치 벌점", "", min=0, max=20, step=0.5)
     w_int: float = p(3.0, "intensity 차이 가중치", "× |ln(I1/I2)|", min=0, max=20, step=0.5)
     w_area: float = p(1.5, "크기 차이 가중치", "× |ln(A1/A2)|", min=0, max=20, step=0.5)
@@ -84,20 +87,20 @@ class TrackingParams:
     velocity_model: bool = p(True, "트랙 속도 예측 (Kalman)", "패턴 신뢰도가 낮을 때 트랙 자체 속도(세포 흐름 제외)로 위치를 예측하고, 트랙별 예측 오차로 gate를 넓힘")
     vel_alpha: float = p(0.4, "속도 평활 계수 α", "새 관측의 반영 비율 (α-β 필터). 클수록 최근 이동을 크게 반영", min=0.05, max=1, step=0.05)
     gate_k: float = p(4.0, "적응형 gate 배수", "트랙별 gate = 배수 × 예측 오차 RMS (최소 gate, 최대 gate 사이)", min=1, max=10, step=0.5)
-    gate_max: float = p(16.0, "최대 gate (HT px)", "빠르게 움직이는 트랙에 허용하는 최대 gate", min=1, max=80, step=0.5)
+    gate_max: float = p(16.0, "최대 gate (RI px)", "빠르게 움직이는 트랙에 허용하는 최대 gate", min=1, max=80, step=0.5)
     pattern_refine: bool = p(True, "2단계 패턴 매칭", "1단계 점수가 낮으면 작은 템플릿(입자 자체)으로 더 넓게 다시 탐색")
     refine_half: int = p(5, "2단계 템플릿 반폭 (형광 px)", "", min=2, max=30)
     refine_search: int = p(24, "2단계 탐색 반경 (형광 px)", "", min=2, max=80)
     refine_min_score: float = p(0.5, "2단계 최소 상관", "이 이상이면 2단계 위치 사용", min=0, max=1, step=0.05)
     constellation: bool = p(False, "주변 배치 비교", "가까운 이웃 몇 개의 상대 위치를 기억해, 다음 프레임 후보 주변에 그 배치가 유지되는지를 비용에 추가 (붙어 다니는 입자 구분)")
     con_k: int = p(4, "배치 비교 이웃 수", "", min=1, max=10)
-    con_radius: float = p(20.0, "배치 이웃 반경 (HT px)", "", min=2, max=80, step=1)
-    con_cap: float = p(6.0, "배치 어긋남 상한 (HT px)", "이웃 하나가 기대 위치에서 이보다 멀어도 이 값으로 계산", min=1, max=30, step=0.5)
+    con_radius: float = p(20.0, "배치 이웃 반경 (RI px)", "", min=2, max=80, step=1)
+    con_cap: float = p(6.0, "배치 어긋남 상한 (RI px)", "이웃 하나가 기대 위치에서 이보다 멀어도 이 값으로 계산", min=1, max=30, step=0.5)
     w_con: float = p(0.5, "배치 비교 가중치", "× 이웃 기대 위치와 실제 가장 가까운 검출 거리의 평균", min=0, max=5, step=0.1)
     gap_max: int = p(1, "누락 연결 최대 프레임 수", "1 = 1프레임 누락만 연결(기존). 2 이상이면 끊긴 조각의 끝과 2~N프레임 뒤 시작을 전체 최적화로 다시 연결")
     gap_penalty: float = p(1.0, "누락 프레임당 벌점 (px)", "누락이 길수록 연결 비용에 더함", min=0, max=10, step=0.5)
     learned_model: str = p("", "학습된 연결 모델 (파일 경로)", "[결과 보기 > 트랙 탐색 > 정답 표시 > 학습하기]로 만든 모델. 지정하면 연결 비용을 이 모델로 계산 (외형 특징 대신). 비우면 사용 안 함")
-    appearance: bool = p(True, "외형 특징 사용 (학습)", "HT RI·모양·크기·Cy5 밝기를 연결 비용에 추가. 가중치는 1차 연결의 확실한 연결에서 자동 학습 (2-pass)")
+    appearance: bool = p(True, "외형 특징 사용 (학습)", "RI·모양·크기·reference 밝기를 연결 비용에 추가. 가중치는 1차 연결의 확실한 연결에서 자동 학습 (2-pass)")
     appearance_scale: float = p(1.0, "외형 비용 배율", "학습된 외형 가중치 전체에 곱하는 배율", min=0, max=5, step=0.1)
     refine_weight: float = p(0.5, "2단계 위치 가중치", "예측 = 가중치 × 2단계 위치 + (1 − 가중치) × 흐름/속도 예측", min=0, max=1, step=0.1)
 
@@ -106,13 +109,13 @@ class TrackingParams:
 class MeasurementParams:
     ring_in: int = p(3, "배경 고리 안쪽 (px)", "ROI 바깥 이 거리부터", min=0, max=30)
     ring_out: int = p(8, "배경 고리 바깥쪽 (px)", "", min=1, max=60)
-    min_ia: float = p(5.0, "비율 계산 최소 I(Cy5)", "배경 뺀 Cy5가 이 값 이하면 비율 제외", min=0, max=1000, step=1)
+    min_ia: float = p(5.0, "비율 계산 최소 I(reference)", "배경 뺀 reference가 이 값 이하면 비율 제외", min=0, max=1000, step=1)
     min_track: int = p(10, "장기 트랙 최소 프레임 수", "그래프·분류에 쓰는 트랙 길이 기준", min=2, max=200)
     inside_fraction: float = p(0.5, "세포 안 판정 비율", "트랙 프레임 중 이 비율 초과가 세포질 안이면 inside", min=0, max=1, step=0.05)
     merge_area_ratio: float = p(1.8, "합쳐짐 판정: 면적 배수", "직전 3시점 중앙값보다 면적이 이 배수 이상 커지고", min=1, max=5, step=0.1)
-    merge_int_ratio: float = p(1.6, "합쳐짐 판정: Cy5 총 밝기 배수", "Cy5 총 밝기(면적×평균)도 이 배수 이상 커지면 다른 입자와 합쳐지거나 가려진 시점(merged)으로 표시", min=1, max=5, step=0.1)
+    merge_int_ratio: float = p(1.6, "합쳐짐 판정: reference 총 밝기 배수", "reference 총 밝기(면적×평균)도 이 배수 이상 커지면 다른 입자와 합쳐지거나 가려진 시점(merged)으로 표시", min=1, max=5, step=0.1)
     merge_max_frames: int = p(3, "합쳐짐 최대 지속 프레임", "급증 후에도 면적이 기준 이상이면 이 프레임 수까지 merged로 표시 (더 길면 영구적 변화로 보고 표시 안 함)", min=1, max=20)
-    exclude_merged: bool = p(True, "합쳐진 시점은 비율에서 제외", "merged 시점의 I(pHrodo)/I(Cy5)를 비워 신호 튐을 막음 (원래 값은 ratio_BA_unfiltered 열에 보관)")
+    exclude_merged: bool = p(True, "합쳐진 시점은 비율에서 제외", "merged 시점의 I(measure)/I(reference)를 비워 신호 튐을 막음 (원래 값은 ratio_BA_unfiltered 열에 보관)")
 
 
 @dataclass
@@ -156,8 +159,8 @@ class Config:
     output: OutputParams = field(default_factory=OutputParams)
 
     SECTION_LABELS = {
-        "channel": "채널·시간", "detection": "입자 검출 (Cy5)", "registration": "정합",
-        "cells": "세포 영역 (HT)", "footprint": "퍼진 세포막 (HT)", "mitosis": "분열 세포",
+        "channel": "채널·시간", "detection": "입자 검출 (reference)", "registration": "정합",
+        "cells": "세포 영역 (RI)", "footprint": "퍼진 세포막 (RI)", "mitosis": "분열 세포",
         "tracking": "트래킹", "measurement": "측정·분류", "risefall": "특이 입자 (증가 후 감소)",
         "output": "출력",
     }
@@ -174,6 +177,7 @@ class Config:
             if obj is None or not is_dataclass(obj):
                 continue
             for k, v in (vals or {}).items():
+                k = _OLD_KEYS.get(k, k)
                 if hasattr(obj, k):
                     setattr(obj, k, type(getattr(obj, k))(v))
         return cfg

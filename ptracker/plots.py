@@ -43,7 +43,7 @@ def ratio_figures(pts, out_dir, prefix="", idcol="track_id"):
         s = d[d.group == g]
         if s.empty: continue
         fig, ax = plt.subplots(figsize=(11, 6.5))
-        _spaghetti(ax, s, "ratio_BA", "I(pHrodo)/I(Cy5)", f"{GNAME[g]} 입자: I(pHrodo)/I(Cy5) ({s[idcol].nunique()} 트랙)", col, yR, idcol)
+        _spaghetti(ax, s, "ratio_BA", "I(measure)/I(reference)", f"{GNAME[g]} 입자: I(measure)/I(reference) ({s[idcol].nunique()} 트랙)", col, yR, idcol)
         _save(fig, f"{out_dir}/{prefix}ratio_timecourse_{g}.png")
     fig, ax = plt.subplots(figsize=(10, 5.5))
     for g, c in [("inside", "tab:red"), ("outside", "tab:blue")]:
@@ -51,15 +51,15 @@ def ratio_figures(pts, out_dir, prefix="", idcol="track_id"):
         if len(q):
             ax.fill_between(q.index, q[.25], q[.75], color=c, alpha=.2)
             ax.plot(q.index, q[.5], "-", color=c, lw=2.5, label=f"{GNAME[g]} (n={d[d.group==g][idcol].nunique()}, 중앙값 ± IQR)")
-    ax.set_xlabel("시간 (h)"); ax.set_ylabel("I(pHrodo)/I(Cy5)"); ax.set_title("I(pHrodo)/I(Cy5): 세포 안 vs 세포 밖"); ax.grid(alpha=.3); ax.legend()
+    ax.set_xlabel("시간 (h)"); ax.set_ylabel("I(measure)/I(reference)"); ax.set_title("I(measure)/I(reference): 세포 안 vs 세포 밖"); ax.grid(alpha=.3); ax.legend()
     _save(fig, f"{out_dir}/{prefix}ratio_inside_vs_outside.png")
     fig, axs = plt.subplots(3, 2, figsize=(18, 15), sharex=True)
     for j, g in enumerate(["inside", "outside"]):
         s = d[d.group == g]
         if s.empty: continue
-        _spaghetti(axs[0, j], s, "I_A", "I(Cy5) (배경 제거)", f"{GNAME[g]}: I(Cy5)", col, (0, np.nanpercentile(d.I_A, 99.7)), idcol)
-        _spaghetti(axs[1, j], s, "I_B", "I(pHrodo) (배경 제거)", f"{GNAME[g]}: I(pHrodo)", col, (np.nanpercentile(d.I_B, .3), np.nanpercentile(d.I_B, 99.7)), idcol)
-        _spaghetti(axs[2, j], s, "HT_RI_mean", "ROI 평균 RI", f"{GNAME[g]}: HT 굴절률", col, (np.nanpercentile(d.HT_RI_mean, .3), np.nanpercentile(d.HT_RI_mean, 99.7)), idcol)
+        _spaghetti(axs[0, j], s, "I_A", "I(reference) (배경 제거)", f"{GNAME[g]}: I(reference)", col, (0, np.nanpercentile(d.I_A, 99.7)), idcol)
+        _spaghetti(axs[1, j], s, "I_B", "I(measure) (배경 제거)", f"{GNAME[g]}: I(measure)", col, (np.nanpercentile(d.I_B, .3), np.nanpercentile(d.I_B, 99.7)), idcol)
+        _spaghetti(axs[2, j], s, "HT_RI_mean", "ROI 평균 RI", f"{GNAME[g]}: 굴절률(RI)", col, (np.nanpercentile(d.HT_RI_mean, .3), np.nanpercentile(d.HT_RI_mean, 99.7)), idcol)
     _save(fig, f"{out_dir}/{prefix}channel_timecourses.png", 90)
 
 
@@ -69,7 +69,7 @@ def per_dataset_medians(pts, path):
     for i, ds in enumerate(d.dataset.unique()):
         for g, ls in [("inside", "-"), ("outside", "--")]:
             m = d[(d.dataset == ds) & (d.group == g)].groupby("t_h").ratio_BA.median(); ax.plot(m.index, m.values, ls, color=DS_COLORS(i), lw=1.8, label=f"{ds} {GNAME[g]}")
-    ax.set_xlabel("시간 (h)"); ax.set_ylabel("I(pHrodo)/I(Cy5) 중앙값"); ax.grid(alpha=.3); ax.legend(ncol=2, fontsize=8); ax.set_title("데이터셋별 중앙값 (실선 = 세포 안, 점선 = 세포 밖)")
+    ax.set_xlabel("시간 (h)"); ax.set_ylabel("I(measure)/I(reference) 중앙값"); ax.grid(alpha=.3); ax.legend(ncol=2, fontsize=8); ax.set_title("데이터셋별 중앙값 (실선 = 세포 안, 점선 = 세포 밖)")
     _save(fig, path)
 
 
@@ -78,9 +78,9 @@ def qc_detection_cells(A, P, HT, CID, path):
     fig, ax = plt.subplots(2, len(frs), figsize=(5 * len(frs), 10.5), squeeze=False)
     for i, z in enumerate(frs):
         ax[0, i].imshow(_disp(A[z - 1], (1, 99.8)), cmap="gray"); q = P[P.frame == z]
-        ax[0, i].plot(q.x, q.y, "r+", ms=3, mew=.5); ax[0, i].set_title(f"Cy5 frame {z}: {len(q)} 입자"); ax[0, i].axis("off")
+        ax[0, i].plot(q.x, q.y, "r+", ms=3, mew=.5); ax[0, i].set_title(f"reference frame {z}: {len(q)} 입자"); ax[0, i].axis("off")
         ax[1, i].imshow(_disp(HT[z - 1]), cmap="gray"); ax[1, i].imshow(np.ma.masked_equal(CID[z - 1], 0) % 20, cmap="tab20", alpha=.3, vmin=0, vmax=19)
-        ax[1, i].contour(CID[z - 1] > 0, [.5], colors="r", linewidths=.6); ax[1, i].set_title(f"HT frame {z}: 세포"); ax[1, i].axis("off")
+        ax[1, i].contour(CID[z - 1] > 0, [.5], colors="r", linewidths=.6); ax[1, i].set_title(f"RI frame {z}: 세포"); ax[1, i].axis("off")
     _save(fig, path, 70)
 
 
@@ -113,7 +113,7 @@ def mitosis_figure(CS, path):
         lw, al = (2.5, 1) if c_ in mc else (1, .4)
         axs[0].plot(s.frame, s.meanRI / 1e4, lw=lw, alpha=al, label=f"cell {c_}" + (" (분열)" if c_ in mc else "")); axs[1].plot(s.frame, s.area, lw=lw, alpha=al)
         m = s[s.mitotic]; axs[0].plot(m.frame, m.meanRI / 1e4, "r*", ms=12); axs[1].plot(m.frame, m.area, "r*", ms=12)
-    axs[0].set_ylabel("세포 평균 RI"); axs[1].set_ylabel("세포 면적 (HT px)"); [a.set_xlabel("frame") for a in axs]; axs[0].legend(fontsize=7)
+    axs[0].set_ylabel("세포 평균 RI"); axs[1].set_ylabel("세포 면적 (RI px)"); [a.set_xlabel("frame") for a in axs]; axs[0].legend(fontsize=7)
     axs[0].set_title("세포별 평균 굴절률 (빨간 별 = 분열 판정)"); axs[1].set_title("세포별 면적"); _save(fig, path, 85)
 
 
@@ -127,22 +127,22 @@ def risefall_fraction(F, path):
         for xi, (p, k, n) in enumerate(zip(t.kept_pct, t.kept, t.n_tracks)):
             if np.isfinite(p): ax.text(xi + (2 * i - .5) * w, p + .1, f"{p:.1f}%\n({int(k)}/{int(n)})", ha="center", fontsize=8)
     ax.set_xticks(x); ax.set_xticklabels(ds); ax.set_ylabel("트랙 비율 (%)"); ax.legend(ncol=2, fontsize=9)
-    ax.set_title("I(pHrodo)/I(Cy5)가 한 번 증가 후 감소·유지된 입자 비율"); _save(fig, path, 100)
+    ax.set_title("I(measure)/I(reference)가 한 번 증가 후 감소·유지된 입자 비율"); _save(fig, path, 100)
 
 
 def track_trace(ax, t, r=None, show_channels=False):
     """한 트랙의 비율 곡선 (+선택: I(A), I(B))."""
     tv = t.dropna(subset=["ratio_BA"]).sort_values("frame"); th = tv.time_min / 60
-    ax.plot(th, tv.ratio_BA, "o-", color="tab:purple", ms=3, lw=.8, alpha=.6, label="I(pHrodo)/I(Cy5)")
+    ax.plot(th, tv.ratio_BA, "o-", color="tab:purple", ms=3, lw=.8, alpha=.6, label="I(measure)/I(reference)")
     ax.plot(th, tv.ratio_BA.rolling(3, center=True, min_periods=1).median(), "k-", lw=1.8, label="3점 중앙값")
     if "merged" in t and t.merged.astype(bool).any():          # 합쳐짐/가림 시점 (비율에서 제외됨)
         m = t[t.merged.astype(bool)]; y = m.ratio_BA_unfiltered if "ratio_BA_unfiltered" in m else m.ratio_BA
         ax.plot(m.time_min / 60, y, "x", color="red", ms=6, mew=1.5, label="합쳐짐/가림 (제외)")
     if r is not None and np.isfinite(getattr(r, "peak_time_h", np.nan)): ax.axvline(r.peak_time_h, color="green", ls=":", lw=1.2)
     if r is not None and np.isfinite(getattr(r, "decline_time_h", np.nan)): ax.axvline(r.decline_time_h, color="red", ls=":", lw=1.2)
-    ax.axhline(0, color="gray", lw=.6); ax.set_xlabel("시간 (h)"); ax.set_ylabel("I(pHrodo)/I(Cy5)"); ax.grid(alpha=.3)
+    ax.axhline(0, color="gray", lw=.6); ax.set_xlabel("시간 (h)"); ax.set_ylabel("I(measure)/I(reference)"); ax.grid(alpha=.3)
     if show_channels:
-        a2 = ax.twinx(); a2.plot(t.time_min / 60, t.I_A, "-", color="tab:red", alpha=.4, lw=1, label="I(Cy5)"); a2.plot(t.time_min / 60, t.I_B * 10, "-", color="tab:orange", alpha=.4, lw=1, label="I(pHrodo)×10")
+        a2 = ax.twinx(); a2.plot(t.time_min / 60, t.I_A, "-", color="tab:red", alpha=.4, lw=1, label="I(reference)"); a2.plot(t.time_min / 60, t.I_B * 10, "-", color="tab:orange", alpha=.4, lw=1, label="I(measure)×10")
         a2.set_ylabel("intensity"); a2.legend(loc="upper right", fontsize=8)
     ax.legend(loc="upper left", fontsize=8)
 
@@ -175,6 +175,6 @@ def risefall_aligned(R, pts, path):
             d = pd.DataFrame(rows, columns=["rel", "r"]); d = d[(d.rel >= -5) & (d.rel <= 5)]; gg = d.groupby("rel"); ok = gg.size() >= max(3, len(s) // 4)
             q = gg.r.quantile([.25, .5, .75]).unstack()[ok]
             if len(q): a.fill_between(q.index, q[.25], q[.75], color=cl, alpha=.15); a.plot(q.index, q[.5], "o-", color=cl, ms=3, label=f"{GNAME[g]} ({len(s)}개)")
-        a.axvline(0, color="k", ls=":"); a.set_xlabel(f"{lab} 기준 시간 (h)"); a.set_ylabel("I(pHrodo)/I(Cy5)"); a.set_title(f"선별 입자 — {lab} 정렬 (중앙값 ± IQR)"); a.grid(alpha=.3)
+        a.axvline(0, color="k", ls=":"); a.set_xlabel(f"{lab} 기준 시간 (h)"); a.set_ylabel("I(measure)/I(reference)"); a.set_title(f"선별 입자 — {lab} 정렬 (중앙값 ± IQR)"); a.grid(alpha=.3)
         if a.get_legend_handles_labels()[0]: a.legend()
     _save(fig, path, 100)

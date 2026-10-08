@@ -200,7 +200,7 @@ def recommend_tracks(points: pd.DataFrame, gt: pd.DataFrame | None = None, n=25,
     for f, idx in P.groupby("frame").indices.items():
         crowd[idx] = [len(k) - 1 for k in cKDTree(xy[idx]).query_ball_point(xy[idx], 10)]
     P["crowd"] = crowd; S["crowded"] = P.groupby("track_id").crowd.mean()
-    if "merged" not in P and "I_A_raw" in P:          # 옛 결과: 면적·Cy5 총 밝기 급증으로 합쳐짐 추정 (측정 단계와 같은 기준)
+    if "merged" not in P and "I_A_raw" in P:          # 옛 결과: 면적·reference 총 밝기 급증으로 합쳐짐 추정 (측정 단계와 같은 기준)
         tt = P.sort_values(["track_id", "frame"]); integ = tt.area_px * tt.I_A_raw; gg = tt.groupby("track_id")
         ra = gg.area_px.transform(lambda x: x.shift(1).rolling(3, min_periods=1).median()); ri = integ.groupby(tt.track_id).transform(lambda x: x.shift(1).rolling(3, min_periods=1).median())
         P.loc[tt.index, "merged"] = ((tt.area_px >= 1.8 * ra) & (integ >= 1.6 * ri)).values

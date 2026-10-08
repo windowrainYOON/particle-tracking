@@ -1,4 +1,10 @@
 # 변경 이력
+## 1.9.0
+- raw TCF 입력: Tomocube `.TCF`(HDF5)를 변환 없이 바로 읽음. 형광은 `Data/2DFLMIP/CHn`(없으면 3DFL의 z 최대값), RI는 `Data/2DMIP`(없으면 3D의 z 최대값). 프레임마다 uint8/uint16이 섞인 형광을 원래 단위 그대로 읽고, RI·measure 프레임은 reference 채널 촬영 시각에 가장 가까운 것을 고름. 합성 TCF에서 tif 입력과 트랙 결과가 완전히 같음.
+- 역할 이름 변경: pHrodo → **measure**, Cy5 → **reference**, HT → **RI** (화면, 그래프, 로그, 파라미터, 영상 파일 이름 `reference_*`·`measure_*`·`RI_*`). CSV 열·파일 이름(`I_A`, `I_B`, `HT_RI_*`, `*_A_B_HT.csv`)은 이전 결과와 호환되도록 유지.
+- 채널 할당 창: TCF의 채널 목록(들뜸/방출 파장, 프레임 수, 촬영 간격)과 채널별 첫 프레임 미리보기를 보고 measure / reference / RI에 할당. 여러 TCF에 같은 할당 적용(채널 없는 파일은 건너뜀), 마지막 할당 기억, [채널 할당 변경]·역할 칸 더블클릭으로 다시 할당, TCF 촬영 간격으로 프레임 간격 설정 제안.
+- [폴더에서 불러오기]가 하위 폴더의 TCF도 찾음. CLI `run --measure a.TCF::CH0 --reference a.TCF::CH1 --ri a.TCF::RI`, `run-folder --assign`.
+- 이전 `dataset.json`·프로젝트·YAML(`cy5`/`phrodo`/`ht`, `*_keyword`)을 그대로 불러옴.
 ## 1.8.0
 - 특이 입자 신뢰도: 결정 구간 연결들의 '2위 후보와의 비용 차이(마진)'로 계산 (정답에서 오연결 구분 AUC 0.95). 표에 reliability·risky_links·gap_links, [신뢰도 기준 이상만] 필터(최소 신뢰도 0.5), 분율표에 kept_reliable. 트래킹 결과에 link_margin·link_cost 저장.
 - 경로 교정 탭: 선택한 특이 입자의 경로를 전체 영상 확대 화면에서 교정, 교정할 때마다 비율·밝기 그래프와 판정을 실시간 갱신. track_edits.csv로 저장해 통합·분석에 반영하고 정답에도 추가.

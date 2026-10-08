@@ -3,7 +3,7 @@
 정답의 연속 연결(ok → ok)마다 '그 입자 다음 프레임 후보들'(예측 위치 근처 검출) 중 정답을 고르는 문제로 보고,
 조건부 로지스틱(후보 중 하나를 고르는 softmax)으로 특징 가중치를 학습합니다.
   비용(후보) = Σ β_k · 특징_k     P(정답 = 후보) ∝ exp(−비용)
-  특징은 tracking.pair_features와 같습니다 (거리, 거리², 크기·Cy5 밝기·HT RI·모양 차이, 세포 불일치, 이웃 이동과의 차이, 주변 배치).
+  특징은 tracking.pair_features와 같습니다 (거리, 거리², 크기·reference 밝기·RI·모양 차이, 세포 불일치, 이웃 이동과의 차이, 주변 배치).
 가중치는 0 이상으로 제한하고, 거리 가중치로 나눠 px 단위(트래킹의 종료 비용 gate+2와 같은 척도)로 저장합니다.
 
 정답이 적을 때 흔들리지 않도록 트래커의 확실한 연결(패턴 상관 ≥ 0.9, 2위 후보와 차이 큼)을 약한 가중치(합계가 정답의 절반)로 함께 씁니다.
@@ -162,7 +162,7 @@ def train(folders, prm: TrackingParams, out_path=DEFAULT_MODEL, log=print):
 
 def report_text(rep) -> str:
     f = lambda v: "-" if v is None or (isinstance(v, float) and np.isnan(v)) else f"{v * 100:.1f}%"
-    w = rep["weights_px"]; names = dict(d="거리", d2="거리²", area="크기", cy5="Cy5 밝기", ht_max="HT RI 최대", ht_mean="HT RI 평균", ecc="모양",
+    w = rep["weights_px"]; names = dict(d="거리", d2="거리²", area="크기", cy5="reference 밝기", ht_max="RI 최대", ht_mean="RI 평균", ecc="모양",
                                          cell="세포 불일치", nb="이웃 이동 차이", con="주변 배치")
     t = (f"정답 궤적 {rep['n_trajectories']}개 · 정답 연결 {rep['n_gt_links']}개로 학습\n"
          f"교차검증(궤적 하나씩 빼고): 정답 후보를 1순위로 고른 비율  학습 모델 {f(rep['cv_top1_learned'])}  vs  현재 비용 {f(rep['cv_top1_current'])}\n"

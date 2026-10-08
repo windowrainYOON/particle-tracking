@@ -61,9 +61,9 @@ class PreviewPanel(QWidget):
     def set_specs(self, specs):
         cur = self._spec()
         self._specs = list(specs); self.ds.blockSignals(True); self.ds.clear()
-        for s in self._specs: self.ds.addItem(s.name, s.cy5)
+        for s in self._specs: self.ds.addItem(s.name, s.reference)
         if cur is not None:
-            i = self.ds.findData(cur.cy5)
+            i = self.ds.findData(cur.reference)
             if i >= 0: self.ds.setCurrentIndex(i)
         self.ds.blockSignals(False)
         self.request()
@@ -92,7 +92,7 @@ class PreviewPanel(QWidget):
 
     # ------------------------------------------------------------ 계산
     @staticmethod
-    def _key(s): return (s.cy5, s.phrodo, s.ht, s.out_dir)
+    def _key(s): return (s.reference, s.measure, s.ri, s.out_dir)
 
     def _spec(self):
         i = self.ds.currentIndex(); return self._specs[i] if 0 <= i < len(self._specs) else None
@@ -103,7 +103,7 @@ class PreviewPanel(QWidget):
         try: cfg = self._get_config()
         except Exception as e: self.status.setText(f"파라미터 오류: {e}"); return   # noqa: BLE001
         self._seq += 1; seq = self._seq; self._t0 = time.time()
-        sec = self._section; z = self.fr.value() - 1; size = int(self.size.currentText()); center = self._centers.get(spec.cy5)
+        sec = self._section; z = self.fr.value() - 1; size = int(self.size.currentText()); center = self._centers.get(spec.reference)
         self.status.setText(f"계산 중… ({PREVIEW_SECTIONS.get(sec, sec)})")
         self._pool.submit(self._work, seq, spec, sec, z, center, size, cfg)
 
@@ -136,7 +136,7 @@ class PreviewPanel(QWidget):
     def _on_click(self, ev):
         if ev.inaxes is not self.ov_ax or self._cur is None or ev.xdata is None: return
         spec = self._spec(); k = self._cur["overview"].shape[0] / self._cur["fl_shape"][0]
-        self._centers[spec.cy5] = (ev.ydata / k, ev.xdata / k); self._prev = None; self.request(manual=True)
+        self._centers[spec.reference] = (ev.ydata / k, ev.xdata / k); self._prev = None; self.request(manual=True)
 
     # ------------------------------------------------------------ 그리기
     def _draw(self):

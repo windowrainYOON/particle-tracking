@@ -1,7 +1,7 @@
 channel:
-  cy5_keyword: Cy5
-  phrodo_keyword: pHrodo
-  ht_keyword: HT
+  reference_keyword: Cy5
+  measure_keyword: pHrodo
+  ri_keyword: HT
   frame_interval_min: 20.0
 detection:
   sigma_bg: 25.0

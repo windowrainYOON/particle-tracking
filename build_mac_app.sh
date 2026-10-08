@@ -8,7 +8,7 @@ cd "$(dirname "$0")"
 ./.venv/bin/pip install -q pyinstaller
 ./.venv/bin/pyinstaller --noconfirm --windowed --name ParticleTracker --icon assets/ParticleTracker.icns \
   --osx-bundle-identifier com.windowrainyoon.particletracker \
-  --collect-all skimage --collect-all imageio_ffmpeg --collect-data matplotlib \
+  --collect-all skimage --collect-all imageio_ffmpeg --collect-all h5py --collect-data matplotlib \
   launcher.py || exit 1
 echo "빌드 완료: dist/ParticleTracker.app"
 if [ "$1" != "--no-install" ]; then

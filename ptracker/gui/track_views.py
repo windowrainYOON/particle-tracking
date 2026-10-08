@@ -1,7 +1,7 @@
 """트랙을 영상 위에서 보는 위젯들 (결과 보기·특이 입자 탭에서 공용).
 
 TrackMapView : 전체 프레임 영상 + 트랙 경로. 경로를 클릭하면 그 트랙을 선택(trackClicked).
-CropViewer   : 선택한 트랙을 따라가는 Cy5 / pHrodo / HT 크롭 (재생·슬라이더, 또는 프레임 모아보기) + 비율 곡선.
+CropViewer   : 선택한 트랙을 따라가는 reference / measure / RI 크롭 (재생·슬라이더, 또는 프레임 모아보기) + 비율 곡선.
 TrackExplorer: [결과 보기] 탭의 트랙 탐색 (트랙 표 + 경로 + 밝기 그래프/크롭).
 
 밝기는 크롭 스택 전체 기준으로 맞춰(프레임마다 따로 맞추지 않음) 시간에 따른 밝기 변화가 그대로 보입니다
@@ -59,7 +59,7 @@ class TrackMapView(QWidget):
         self._ctx = None; self._src = None; self._err = ""; self._pts = pd.DataFrame(); self._markers = {}; self._sel = None
         self._bg = {}; self._tree = None; self._tree_uids = None; self._view_key = None; self._tree_cols = None
         v = QVBoxLayout(self); v.setContentsMargins(0, 0, 0, 0); row = QHBoxLayout()
-        self.ch = QComboBox(); self.ch.addItems(["Cy5", "HT"]); self.ch.currentTextChanged.connect(lambda _: self.redraw(keep_view=False))
+        self.ch = QComboBox(); self.ch.addItems(["reference", "RI"]); self.ch.currentTextChanged.connect(lambda _: self.redraw(keep_view=False))
         self.fr = QSpinBox(); self.fr.setRange(1, 1); self.fr.setPrefix("frame "); self.fr.valueChanged.connect(lambda _: self.redraw())
         self.paths = QCheckBox("경로"); self.paths.setChecked(True); self.paths.toggled.connect(lambda _: self.redraw())
         self.lbl = QLabel(""); self.lbl.setStyleSheet("color: gray")
@@ -91,12 +91,12 @@ class TrackMapView(QWidget):
 
     def frame(self): return self.fr.value()
 
-    def _cols(self): return ("x_fl", "y_fl") if self.ch.currentText() == "Cy5" else ("x_ht", "y_ht")
+    def _cols(self): return ("x_fl", "y_fl") if self.ch.currentText() == "reference" else ("x_ht", "y_ht")
 
     def _background(self):
-        ch = "cy5" if self.ch.currentText() == "Cy5" else "ht"; z = self.fr.value() - 1; key = (ch, z)
+        ch = "reference" if self.ch.currentText() == "reference" else "ri"; z = self.fr.value() - 1; key = (ch, z)
         if key not in self._bg:
-            im = self._src.frame(ch, z).astype(np.float32); lo, hi = np.percentile(im[::4, ::4], (0.5, 99.8) if ch == "ht" else (1, 99.7))
+            im = self._src.frame(ch, z).astype(np.float32); lo, hi = np.percentile(im[::4, ::4], (0.5, 99.8) if ch == "ri" else (1, 99.7))
             self._bg.clear(); self._bg[key] = np.clip((im - lo) / max(hi - lo, 1e-9), 0, 1)
         return self._bg[key]
 
@@ -194,10 +194,10 @@ class CropViewer(QWidget):
             for i, f in enumerate(fr):
                 if seq != self._seq: return
                 x, y = pos["x_fl"][i], pos["y_fl"][i]; dy, dx = ctx.shift_B(f)
-                A.append(_crop(src.frame("cy5", f - 1), x, y, h)); B.append(_crop(src.frame("phrodo", f - 1), x - dx, y - dy, h))
-                H.append(_crop(src.frame("ht", f - 1), pos["x_ht"][i], pos["y_ht"][i], hh))
+                A.append(_crop(src.frame("reference", f - 1), x, y, h)); B.append(_crop(src.frame("measure", f - 1), x - dx, y - dy, h))
+                H.append(_crop(src.frame("ri", f - 1), pos["x_ht"][i], pos["y_ht"][i], hh))
             A, B, H = np.stack(A).astype(np.float32), np.stack(B).astype(np.float32), np.stack(H).astype(np.float32)
-            ht_mid = src.frame("ht", src.T // 2); hlo, hhi = np.percentile(ht_mid[::4, ::4], [.5, 99.8])
+            ht_mid = src.frame("ri", src.T // 2); hlo, hhi = np.percentile(ht_mid[::4, ::4], [.5, 99.8])
             data = dict(fr=fr, A=A, B=B, H=H, h=h, hh=hh, S=src.S, va=(0, np.percentile(A, 99.8)), vb=(0, max(np.percentile(B, 99.8), 3)),
                         vh=(hlo, hhi), det=set(t.frame.astype(int)), rad=dict(zip(t.frame.astype(int), t.radius_equiv_px)) if "radius_equiv_px" in t else {})
             self._bridge.done.emit(seq, data)
@@ -220,7 +220,7 @@ class CropViewer(QWidget):
             n = min(len(fr), 10); idx = np.unique(np.linspace(0, len(fr) - 1, n).round().astype(int))
             axs = self.fig.subplots(3, len(idx), squeeze=False)
             for j, i in enumerate(idx):
-                for k, (st, vr, nm, rad) in enumerate([(d["A"], d["va"], "Cy5", d["h"]), (d["B"], d["vb"], "pHrodo", d["h"]), (d["H"], d["vh"], "HT", d["hh"])]):
+                for k, (st, vr, nm, rad) in enumerate([(d["A"], d["va"], "reference", d["h"]), (d["B"], d["vb"], "measure", d["h"]), (d["H"], d["vh"], "RI", d["hh"])]):
                     a = axs[k, j]; a.imshow(st[i], cmap="gray", vmin=vr[0], vmax=vr[1]); a.set_xticks([]); a.set_yticks([])
                     f = fr[i]; det = f in d["det"]
                     a.add_patch(Circle((rad - .5, rad - .5), (d["rad"].get(f, 4) + 2) * (d["S"] if k == 2 else 1), fill=False, ec="lime" if det else "yellow", lw=.8, ls="-" if det else "--"))
@@ -235,7 +235,7 @@ class CropViewer(QWidget):
         else:
             gs = self.fig.add_gridspec(2, 3, height_ratios=[1.3, 1]); self._axs = [self.fig.add_subplot(gs[0, i]) for i in range(3)]; tr = gs[1, :]
         self._ims = []
-        for a, (st, vr, nm) in zip(self._axs, [(d["A"], d["va"], "Cy5"), (d["B"], d["vb"], "pHrodo (정합)"), (d["H"], d["vh"], "HT")]):
+        for a, (st, vr, nm) in zip(self._axs, [(d["A"], d["va"], "reference"), (d["B"], d["vb"], "measure (정합)"), (d["H"], d["vh"], "RI")]):
             self._ims.append(a.imshow(st[0], cmap="gray", vmin=vr[0], vmax=vr[1])); a.set_title(nm, fontsize=9); a.axis("off")
         self._circ = [a.add_patch(Circle((0, 0), 1, fill=False, lw=1.3)) for a in self._axs]
         ax = self.fig.add_subplot(tr); track_trace(ax, q["t"], q["r"], show_channels=True)
@@ -290,7 +290,7 @@ def track_table(pts: pd.DataFrame) -> pd.DataFrame:
               start=("frame", "min"), end=("frame", "max"), ratio_mean=("ratio_BA", "mean"), ratio_max=("ratio_BA", "max"),
               I_A_mean=("I_A", "mean"), I_B_mean=("I_B", "mean"), frac_in_cell=("inside_cell", "mean")).reset_index()
     T["group"] = T.group.map(lambda x: GROUP_LABELS.get(x, x))
-    # 주변 밀집도: 같은 프레임에서 10 HT px 안의 다른 검출 수의 트랙 평균 (정답 표시할 어려운 트랙 고르기용)
+    # 주변 밀집도: 같은 프레임에서 10 RI px 안의 다른 검출 수의 트랙 평균 (정답 표시할 어려운 트랙 고르기용)
     crowd = np.zeros(len(pts))
     for f, idx in pts.groupby(["dataset", "frame"]).indices.items():
         xy = pts[["x_ht", "y_ht"]].values[idx]; crowd[idx] = [len(n) - 1 for n in cKDTree(xy).query_ball_point(xy, 10)]
@@ -413,9 +413,9 @@ class TrackExplorer(QWidget):
 
 # ====================================================================== 전체 영상 확대 보기 (정답 표시·경로 교정 공용)
 class FrameZoomView(QWidget):
-    """이전 프레임 Cy5 / 현재 프레임 Cy5 / 현재 HT를 형광 좌표로 나란히 (셋이 함께 확대·이동).
+    """이전 프레임 reference / 현재 프레임 reference / 현재 HT를 형광 좌표로 나란히 (셋이 함께 확대·이동).
     휠 = 확대/축소, 툴바 손 버튼 = 이동. 프레임을 바꿔도 보는 영역은 그대로이고, 중심 위치가 가장자리로 나갈 때만 따라갑니다.
-    현재 프레임(가운데·HT)을 클릭하면 clicked(x, y, 붙은 검출 행 또는 None)를 보냅니다 (검출에서 6 px 이내면 그 검출에 붙음)."""
+    현재 프레임(가운데·RI)을 클릭하면 clicked(x, y, 붙은 검출 행 또는 None)를 보냅니다 (검출에서 6 px 이내면 그 검출에 붙음)."""
     clicked = Signal(float, float, object)
     VIEW = 70
 
@@ -438,7 +438,7 @@ class FrameZoomView(QWidget):
     def _frame_img(self, ch, f):
         key = (ch, f)
         if key not in self._bg:
-            im = self._src.frame(ch, f - 1).astype(np.float32); lo, hi = np.percentile(im[::4, ::4], (0.5, 99.8) if ch == "ht" else (1, 99.7))
+            im = self._src.frame(ch, f - 1).astype(np.float32); lo, hi = np.percentile(im[::4, ::4], (0.5, 99.8) if ch == "ri" else (1, 99.7))
             if len(self._bg) > 6: self._bg.pop(next(iter(self._bg)))
             self._bg[key] = np.clip((im - lo) / max(hi - lo, 1e-9), 0, 1)
         return self._bg[key]
@@ -459,10 +459,10 @@ class FrameZoomView(QWidget):
             self._view = ((center[0] - w / 2, center[0] + w / 2), (center[1] + hgt / 2, center[1] - hgt / 2))
         self.fig.clear(); a0 = self.fig.add_subplot(131)
         axs = [a0, self.fig.add_subplot(132, sharex=a0, sharey=a0), self.fig.add_subplot(133, sharex=a0, sharey=a0)]; self._axs = axs
-        if f > 1: axs[0].imshow(self._frame_img("cy5", f - 1), cmap="gray", interpolation="nearest")
-        axs[1].imshow(self._frame_img("cy5", f), cmap="gray", interpolation="nearest")
-        axs[2].imshow(self._frame_img("ht", f), cmap="gray", interpolation="nearest", extent=self._ht_extent(f))
-        for ax, t in zip(axs, [f"이전 frame {f - 1}", f"frame {f} — {title_cur}", f"HT frame {f}"]): ax.set_title(t, fontsize=9); ax.set_xticks([]); ax.set_yticks([])
+        if f > 1: axs[0].imshow(self._frame_img("reference", f - 1), cmap="gray", interpolation="nearest")
+        axs[1].imshow(self._frame_img("reference", f), cmap="gray", interpolation="nearest")
+        axs[2].imshow(self._frame_img("ri", f), cmap="gray", interpolation="nearest", extent=self._ht_extent(f))
+        for ax, t in zip(axs, [f"이전 frame {f - 1}", f"frame {f} — {title_cur}", f"RI frame {f}"]): ax.set_title(t, fontsize=9); ax.set_xticks([]); ax.set_yticks([])
         (vx0, vx1), (vy1, vy0) = self._view; m = 10
         if self._pts is not None:
             for ax, ff in ((axs[0], f - 1), (axs[1], f), (axs[2], f)):
@@ -494,7 +494,7 @@ class FrameZoomView(QWidget):
 # ====================================================================== 정답 표시 (ground truth)
 class AnnotationPanel(QWidget):
     """트랙 하나를 시작점으로 프레임마다 '이 입자가 맞는지'를 확인해 정답 궤적을 만듭니다 (화면: FrameZoomView).
-    · 현재 프레임(가운데 또는 HT)을 클릭 → 그 위치(가까운 검출에 붙음)를 정답으로 하고 다음 프레임으로
+    · 현재 프레임(가운데 또는 RI)을 클릭 → 그 위치(가까운 검출에 붙음)를 정답으로 하고 다음 프레임으로
     · Enter = 표시된 위치가 맞음, M = 합쳐짐/가림, X = 안 보임, U = 모름, E = 여기서 끝, ←/→ = 이동
     · pHrodo는 보여주지 않습니다 (분석 결과값을 보고 판단하지 않도록).
     저장: <결과 폴더>/ground_truth.csv (바뀔 때마다 자동 저장)
@@ -755,10 +755,10 @@ class LinkCheckPanel(QWidget):
         if self._C is None or not len(self._C) or self._src is None: self.canvas.draw_idle(); return
         r = self._C.iloc[self._i]; h = self.HALF; S = self._src.S; hh = int(round(h * S)); reg = self._ctx.reg
         axs = self.fig.subplots(1, 4)
-        for k, (ax, ch, f, x, y) in enumerate([(axs[0], "cy5", r.frame_a, r.x_a, r.y_a), (axs[1], "cy5", r.frame_b, r.x_b, r.y_b),
-                                                (axs[2], "ht", r.frame_a, r.x_a, r.y_a), (axs[3], "ht", r.frame_b, r.x_b, r.y_b)]):
+        for k, (ax, ch, f, x, y) in enumerate([(axs[0], "reference", r.frame_a, r.x_a, r.y_a), (axs[1], "reference", r.frame_b, r.x_b, r.y_b),
+                                                (axs[2], "ri", r.frame_a, r.x_a, r.y_a), (axs[3], "ri", r.frame_b, r.x_b, r.y_b)]):
             f = int(f); ax.set_xticks([]); ax.set_yticks([])
-            if ch == "ht":
+            if ch == "ri":
                 dy = dx = 0.0
                 if reg is not None and len(reg) >= f: dy, dx = reg.dy_ht.values[f - 1], reg.dx_ht.values[f - 1]
                 x, y, hr = (x + .5) * S - .5 + dx, (y + .5) * S - .5 + dy, hh
@@ -766,8 +766,8 @@ class LinkCheckPanel(QWidget):
             try: im = _crop(self._src.frame(ch, f - 1), x, y, hr).astype(np.float32)
             except DataUnavailable as e: self.lbl.setText(str(e)); return
             lo, hi = np.percentile(im, [1, 99.7]); ax.imshow(im, cmap="gray", vmin=lo, vmax=max(hi, lo + 1))
-            ax.add_patch(Circle((hr - .5, hr - .5), 7 * (S if ch == "ht" else 1), fill=False, ec="lime", lw=1.2))
-            ax.set_title(f"{'Cy5' if ch == 'cy5' else 'HT'} frame {f}" + (" (앞)" if k % 2 == 0 else " (뒤)"), fontsize=9)
+            ax.add_patch(Circle((hr - .5, hr - .5), 7 * (S if ch == "ri" else 1), fill=False, ec="lime", lw=1.2))
+            ax.set_title(f"{'reference' if ch == 'reference' else 'RI'} frame {f}" + (" (앞)" if k % 2 == 0 else " (뒤)"), fontsize=9)
         self.fig.tight_layout()
         ans = {"same": "같은 입자", "diff": "다른 입자", "unsure": "모름", "": "미답"}[r.answer]
         self.lbl.setText(f"표본 {self._i + 1}/{len(self._C)} · 프레임 {int(r.frame_a)} → {int(r.frame_b)} · 지금 답: {ans} — 초록 원 안의 두 입자가 같은 입자인가요? (Y/N/U)\n"
@@ -858,9 +858,9 @@ class TrackEditor(QWidget):
         if len(P):
             th = P.time_min / 60; ax.plot(th, P.ratio_BA, "o-", color="tab:purple", ms=3, lw=1.2, label="교정 경로 비율")
             e = P[P.status.isin(["edit", "ok"])]; ax.plot(e.time_min / 60, e.ratio_BA, "o", mfc="none", mec="lime", ms=7, mew=1.2, ls="none", label="교정·확인한 점")
-            a2 = ax.twinx(); a2.plot(th, P.I_A, "-", color="tab:red", alpha=.45, lw=1, label="I(Cy5)"); a2.plot(th, P.I_B * 10, "-", color="tab:orange", alpha=.45, lw=1, label="I(pHrodo)×10")
+            a2 = ax.twinx(); a2.plot(th, P.I_A, "-", color="tab:red", alpha=.45, lw=1, label="I(reference)"); a2.plot(th, P.I_B * 10, "-", color="tab:orange", alpha=.45, lw=1, label="I(measure)×10")
             a2.set_ylabel("intensity", fontsize=8); a2.legend(loc="upper right", fontsize=7)
-        ax.axvline((f - 1) * dt / 60, color="k", lw=1, ls=":"); ax.set_xlabel("시간 (h)"); ax.set_ylabel("I(pHrodo)/I(Cy5)"); ax.grid(alpha=.3); ax.legend(loc="upper left", fontsize=7)
+        ax.axvline((f - 1) * dt / 60, color="k", lw=1, ls=":"); ax.set_xlabel("시간 (h)"); ax.set_ylabel("I(measure)/I(reference)"); ax.grid(alpha=.3); ax.legend(loc="upper left", fontsize=7)
         cur = classify_track(P[["frame", "ratio_BA"]], cfg.risefall, dt) if len(P) else {}
         org = self._r
         verdict = lambda d: (CNAME.get(d.get("category"), "증가 후 감소 아님") + (" · 선별 ✔" if d.get("keep") else " · 선별 안 됨")) if d else "-"

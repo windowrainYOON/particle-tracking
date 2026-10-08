@@ -1,4 +1,4 @@
-"""2단계: 형광(Cy5) → HT, Cy5 ↔ pHrodo 프레임별 정합."""
+"""2단계: 형광(reference) → RI, reference ↔ measure 프레임별 정합."""
 from __future__ import annotations
 import numpy as np, pandas as pd
 from scipy import ndimage as ndi
@@ -43,7 +43,7 @@ def register_frame(a, b, ht, prm: RegistrationParams):
 
 def register(A, B, HT, prm: RegistrationParams, progress=None) -> pd.DataFrame:
     """프레임별 이동량 표.
-    - dy_ht, dx_ht : 형광 좌표 × 배율(S) + 이동 = HT 좌표
+    - dy_ht, dx_ht : 형광 좌표 × 배율(S) + 이동 = RI 좌표
     - dy_B, dx_B   : np.roll(B, (dy_B, dx_B)) 하면 A와 정렬됨"""
     T = A.shape[0]; rows = []
     for z in range(T):
@@ -65,6 +65,6 @@ def align_b(B, reg) -> np.ndarray:
 
 
 def fl_to_ht(y, x, frame, reg, S):
-    """형광 좌표(y,x) → HT 좌표. frame은 1-based (배열 가능)."""
+    """형광 좌표(y,x) → RI 좌표. frame은 1-based (배열 가능)."""
     i = np.asarray(frame) - 1
     return (np.asarray(y) + 0.5) * S - 0.5 + reg.dy_ht.values[i], (np.asarray(x) + 0.5) * S - 0.5 + reg.dx_ht.values[i]

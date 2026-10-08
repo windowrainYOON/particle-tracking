@@ -23,7 +23,7 @@ import numpy as np, pandas as pd, tifffile
 from skimage.segmentation import find_boundaries
 from skimage.transform import resize
 from .config import Config
-from .io_utils import DatasetSpec
+from .io_utils import DatasetSpec, split_source, source_shape, read_frame, ROLE_LABELS
 from . import detection, registration, cells, measurement
 
 SF_DATALESS = 0x40000000          # macOS: iCloud로만 옮겨진(로컬에 내용이 없는) 파일
@@ -42,16 +42,12 @@ def is_dataless(path) -> bool:
 
 
 def check_files(spec: DatasetSpec):
-    for nm, p in (("Cy5", spec.cy5), ("pHrodo", spec.phrodo), ("HT", spec.ht)):
+    for role, src in spec.sources().items():
+        nm, p = ROLE_LABELS[role], split_source(src)[0]
         if not Path(p).is_file(): raise DataUnavailable(f"{nm} 파일 없음: {p}")
         if is_dataless(p):
             raise DataUnavailable(f"{nm} 파일이 iCloud에만 있고 이 Mac에 내려받아져 있지 않습니다:\n{p}\n"
                                   "Finder에서 파일을 우클릭 → [지금 다운로드]한 뒤 다시 시도하세요.")
-
-
-def _shape(path):
-    with tifffile.TiffFile(path) as t: s = [d for d in t.series[0].shape if d != 1]
-    return (1, *s) if len(s) == 2 else tuple(s)
 
 
 def _norm(im, p=(0.5, 99.8)):
@@ -63,18 +59,17 @@ class PreviewSource:
 
     def __init__(self, spec: DatasetSpec, max_frames=12):
         check_files(spec); self.spec = spec
-        self.T, self.NF, self.NW = _shape(spec.cy5); _, self.NH, self.NHW = _shape(spec.ht)
+        self.T, self.NF, self.NW = source_shape(spec.reference); _, self.NH, self.NHW = source_shape(spec.ri, spec.reference)
         self.S = self.NH / self.NF; self.cache_dir = Path(spec.out_dir) / "_cache"
         self._frames: OrderedDict = OrderedDict(); self._max = max_frames; self._memo: OrderedDict = OrderedDict()
 
     def frame(self, ch, z):
-        """ch ∈ {cy5, phrodo, ht}, z는 0부터."""
+        """ch ∈ {reference, measure, ri}, z는 0부터."""
         key = (ch, z)
         if key in self._frames: self._frames.move_to_end(key); return self._frames[key]
-        path = getattr(self.spec, ch)
+        src = getattr(self.spec, ch); path = split_source(src)[0]
         if is_dataless(path): raise DataUnavailable(f"{path} 가 iCloud에만 있습니다. 내려받은 뒤 다시 시도하세요.")
-        a = np.squeeze(tifffile.imread(path, key=z)) if self.T > 1 else np.squeeze(tifffile.imread(path))
-        if a.ndim != 2: a = np.squeeze(tifffile.imread(path))[z]           # 페이지 = 프레임이 아닌 파일
+        a = read_frame(src, z, self.spec.reference)
         self._frames[key] = a
         while len(self._frames) > self._max: self._frames.popitem(last=False)
         return a
@@ -92,7 +87,7 @@ class PreviewSource:
 
     # ---------------------------------------------------------------- 공통
     def overview(self, z):
-        return self.memo(("ov", z), lambda: _norm(resize(self.frame("cy5", z).astype(np.float32), (OVERVIEW_PX, round(OVERVIEW_PX * self.NW / self.NF)),
+        return self.memo(("ov", z), lambda: _norm(resize(self.frame("reference", z).astype(np.float32), (OVERVIEW_PX, round(OVERVIEW_PX * self.NW / self.NF)),
                                                           anti_aliasing=True), (1, 99.8)))
 
     def fl_box(self, cy, cx, size):
@@ -116,11 +111,11 @@ def _crop(a, box): y0, y1, x0, x1 = box; return a[y0:y1, x0:x1]
 # ================================================================ 섹션별 미리보기
 def _detect(src: PreviewSource, z, cfg: Config):
     key = ("det", z, tuple(asdict(cfg.detection).values()))
-    return src.memo(key, lambda: detection.detect_frame(src.frame("cy5", z), cfg.detection))
+    return src.memo(key, lambda: detection.detect_frame(src.frame("reference", z), cfg.detection))
 
 
 def preview_detection(src, z, box, cfg):
-    lab, thr = _detect(src, z, cfg); raw = src.frame("cy5", z); lc = _crop(lab, box); n_all = int(lab.max())
+    lab, thr = _detect(src, z, cfg); raw = src.frame("reference", z); lc = _crop(lab, box); n_all = int(lab.max())
     ids = np.unique(lc[lc > 0]); area = np.bincount(lab.ravel())[1:]
     ys, xs = [], []
     for k in ids:
@@ -136,7 +131,7 @@ def _cell_thr(src, cfg):
     p = cfg.cells; key = ("cthr", p.open_radius, p.smooth_sigma)
 
     def calc():
-        sample = cells.cell_body_images(np.stack([src.frame("ht", z) for z in range(0, src.T, 4)]), p)
+        sample = cells.cell_body_images(np.stack([src.frame("ri", z) for z in range(0, src.T, 4)]), p)
         return cells.cell_thresholds(sample)
     return src.memo(key, calc)
 
@@ -145,7 +140,7 @@ def _cells(src, z, cfg):
     p = cfg.cells; key = ("cells", z, tuple(asdict(p).values()))
 
     def calc():
-        low, core = _cell_thr(src, cfg); img = cells.cell_body_images(src.frame("ht", z)[None], p)[0]
+        low, core = _cell_thr(src, cfg); img = cells.cell_body_images(src.frame("ri", z)[None], p)[0]
         return cells.segment_frame(img, low, core, p), low, core
     return src.memo(key, calc)
 
@@ -156,13 +151,13 @@ def preview_cells(src, z, box, cfg):
     info = (f"threshold: 세포 영역 {low:.1f} / 세포 중심 {core:.1f} (4프레임 간격 표본, 전체 실행과 같음)\n"
             f"frame {z+1} 전체: 세포 {len(areas)}개, 세포질 비율 {(lab > 0).mean() * 100:.1f}%\n"
             "※ 'ID 연결 겹침 비율'과 'optical flow'는 여러 프레임에 걸친 값이라 여기서는 보이지 않습니다")
-    return dict(kind="image", image=_norm(_crop(src.frame("ht", z), hb)),
+    return dict(kind="image", image=_norm(_crop(src.frame("ri", z), hb)),
                 overlays=[dict(type="labels", labels=lc), dict(type="contour", mask=find_boundaries(lc, mode="inner"), color="red")],
                 info=info, params=_params(cfg, "cells"))
 
 
 def preview_footprint(src, z, box, cfg):
-    lab, _, _ = _cells(src, z, cfg); ht = src.frame("ht", z)
+    lab, _, _ = _cells(src, z, cfg); ht = src.frame("ri", z)
     FP, st = src.memo(("fp", z, tuple(asdict(cfg.cells).values()), tuple(asdict(cfg.footprint).values())),
                       lambda: cells.footprint_frame(ht, lab, cfg.footprint))
     hb = src.ht_box(box, z); lc = _crop(lab, hb); sm = _crop(FP & (lab == 0), hb)
@@ -176,20 +171,20 @@ def preview_footprint(src, z, box, cfg):
 
 
 def preview_registration(src, z, box, cfg):
-    a, b, ht = src.frame("cy5", z), src.frame("phrodo", z), src.frame("ht", z)
+    a, b, ht = src.frame("reference", z), src.frame("measure", z), src.frame("ri", z)
     c, dy, dx, cb, by, bx, c0 = src.memo(("reg", z, tuple(asdict(cfg.registration).values())),
                                          lambda: registration.register_frame(a, b, ht, cfg.registration))
     p = cfg.registration
     y0, y1, x0, x1 = box; f = lambda v, d, n: int(np.clip(round((v + 0.5) * src.S - 0.5 + d), 0, n))
     hb = (f(y0, dy, src.NH), f(y1, dy, src.NH), f(x0, dx, src.NHW), f(x1, dx, src.NHW))
     H = _norm(_crop(ht, hb)); F = _norm(resize(_crop(a, box).astype(np.float32), H.shape, anti_aliasing=True), (1, 99.8))
-    rgb = np.dstack([F, H * 0.85, F])        # 자홍 = Cy5(정합 후), 초록 = HT
+    rgb = np.dstack([F, H * 0.85, F])        # 자홍 = reference(정합 후), 초록 = RI
     warn = []
-    if c < p.fl_ht_min_corr: warn.append(f"형광→HT 상관 {c:.2f} < {p.fl_ht_min_corr} → 전체 실행에서는 다른 프레임 이동량 중앙값으로 대체")
-    if cb < p.ab_min_corr: warn.append(f"Cy5↔pHrodo 상관 {cb:.2f} < {p.ab_min_corr} → 전체 실행에서는 중앙값으로 대체")
-    info = (f"형광→HT 이동 ({dy:+.2f}, {dx:+.2f}) HT px, 상관 {c:.2f}\n"
-            f"Cy5↔pHrodo 이동 ({int(by):+d}, {int(bx):+d}) px, 상관 {cb:.2f} (이동 전 {c0:.2f})\n"
-            "자홍 = Cy5(이동 적용), 초록 = HT — 입자가 흰색으로 겹치면 정합이 맞는 것" + ("\n⚠ " + "\n⚠ ".join(warn) if warn else ""))
+    if c < p.fl_ht_min_corr: warn.append(f"형광→RI 상관 {c:.2f} < {p.fl_ht_min_corr} → 전체 실행에서는 다른 프레임 이동량 중앙값으로 대체")
+    if cb < p.ab_min_corr: warn.append(f"reference↔measure 상관 {cb:.2f} < {p.ab_min_corr} → 전체 실행에서는 중앙값으로 대체")
+    info = (f"형광→RI 이동 ({dy:+.2f}, {dx:+.2f}) RI px, 상관 {c:.2f}\n"
+            f"reference↔measure 이동 ({int(by):+d}, {int(bx):+d}) px, 상관 {cb:.2f} (이동 전 {c0:.2f})\n"
+            "자홍 = reference(이동 적용), 초록 = RI — 입자가 흰색으로 겹치면 정합이 맞는 것" + ("\n⚠ " + "\n⚠ ".join(warn) if warn else ""))
     return dict(kind="image", image=rgb, overlays=[], info=info, params=_params(cfg, "registration"))
 
 
@@ -211,11 +206,11 @@ def preview_measurement(src, z, box, cfg):
     if reg is not None and len(reg) > z: r = reg.iloc[z]; dyh, dxh, dyb, dxb = r.dy_ht, r.dx_ht, int(r.dy_B), int(r.dx_B); src_txt = "정합: 캐시"
     else:
         c, dyh, dxh, cb, dyb, dxb, _ = src.memo(("reg", z, tuple(asdict(cfg.registration).values())),
-                                                lambda: registration.register_frame(src.frame("cy5", z), src.frame("phrodo", z), src.frame("ht", z), cfg.registration))
+                                                lambda: registration.register_frame(src.frame("reference", z), src.frame("measure", z), src.frame("ri", z), cfg.registration))
         dyb, dxb = int(dyb), int(dxb); src_txt = "정합: 이 프레임만 계산"
-    a = src.frame("cy5", z); b = np.roll(src.frame("phrodo", z), (dyb, dxb), (0, 1)); lc = _crop(lab, box)
+    a = src.frame("reference", z); b = np.roll(src.frame("measure", z), (dyb, dxb), (0, 1)); lc = _crop(lab, box)
     ids = [int(k) for k in np.unique(lc[lc > 0])]
-    rec, masks = measurement.measure_frame(lab, a, b, src.frame("ht", z), dyh, dxh, src.S, cfg.measurement, labels=ids, return_masks=True)
+    rec, masks = measurement.measure_frame(lab, a, b, src.frame("ri", z), dyh, dxh, src.S, cfg.measurement, labels=ids, return_masks=True)
     y0, _, x0, _ = box; H, W = lc.shape; roi = np.zeros((H, W), bool); ring = np.zeros((H, W), bool); ys, xs, txt = [], [], []
     vals = []
     for k, (IA, IB, _, bgA, bgB, _, _) in rec.items():
@@ -227,9 +222,9 @@ def preview_measurement(src, z, box, cfg):
         yy, xx = np.nonzero(m); ys.append(yy.mean() + my - y0); xs.append(xx.mean() + mx - x0)
         txt.append("—" if np.isnan(ratio) else f"{ratio * 100:.1f}")
     v = np.array(vals) if vals else np.zeros((0, 3))
-    info = (f"선택 영역 ROI {len(ids)}개 ({src_txt}) · 파란 고리 = 배경 측정 영역, 숫자 = I(pHrodo)/I(Cy5) × 100\n"
-            f"중앙값: I(Cy5) {np.nanmedian(v[:, 0]) if len(v) else np.nan:.1f}, I(pHrodo) {np.nanmedian(v[:, 1]) if len(v) else np.nan:.2f}, "
-            f"비율 {np.nanmedian(v[:, 2]) if len(v) and np.isfinite(v[:, 2]).any() else np.nan:.4f} · I(Cy5) ≤ {cfg.measurement.min_ia:g} 로 비율 제외 {int(np.isnan(v[:, 2]).sum()) if len(v) else 0}개\n"
+    info = (f"선택 영역 ROI {len(ids)}개 ({src_txt}) · 파란 고리 = 배경 측정 영역, 숫자 = I(measure)/I(reference) × 100\n"
+            f"중앙값: I(reference) {np.nanmedian(v[:, 0]) if len(v) else np.nan:.1f}, I(measure) {np.nanmedian(v[:, 1]) if len(v) else np.nan:.2f}, "
+            f"비율 {np.nanmedian(v[:, 2]) if len(v) and np.isfinite(v[:, 2]).any() else np.nan:.4f} · I(reference) ≤ {cfg.measurement.min_ia:g} 로 비율 제외 {int(np.isnan(v[:, 2]).sum()) if len(v) else 0}개\n"
             "※ '장기 트랙 최소 프레임 수'와 '세포 안 판정 비율'은 트래킹 결과가 있어야 하므로 여기서는 보이지 않습니다")
     ov = [dict(type="fill", mask=ring, color=(0.2, 0.6, 1.0), alpha=0.35), dict(type="contour", mask=find_boundaries(roi, mode="inner"), color="yellow")]
     if len(ids) <= 60: ov.append(dict(type="text", y=[y + cfg.measurement.ring_out + 4 for y in ys], x=xs, text=txt, color="yellow"))
@@ -250,5 +245,5 @@ def run_preview(src: PreviewSource, section, z, center, size, cfg: Config) -> di
     else: out = dict(kind="message", info="이 섹션은 영상으로 확인할 항목이 없습니다.")
     k = OVERVIEW_PX / src.NF
     out.update(overview=src.overview(z), crop_box=(box[0] * k, box[1] * k, box[2] * k, box[3] * k), section=section, frame=z,
-               key=(src.spec.cy5, z, box))
+               key=(src.spec.reference, z, box))
     return out

@@ -1,6 +1,6 @@
 """4단계: 입자 트래킹 (v2 알고리즘 + 속도 예측·2단계 패턴 매칭).
 
-예측 위치 = HT 세포 흐름(optical flow) + Cy5 패턴 매칭(입자와 주변 입자 배치를 템플릿으로 다음 프레임에서 탐색)
+예측 위치 = RI 세포 흐름(optical flow) + reference 패턴 매칭(입자와 주변 입자 배치를 템플릿으로 다음 프레임에서 탐색)
     + (pattern_refine) 패턴 점수가 낮으면 작은 템플릿으로 넓게 재탐색
     + (velocity_model) 패턴이 불확실하면 트랙 자체 속도(α-β/Kalman)로 보정, 트랙별 적응형 gate
 비용 = 예측 거리 + 세포 불일치 + intensity 차이 + 크기 차이 + 이웃 일관성(주변 입자 이동 중앙값과의 차이, 2-pass)
@@ -70,7 +70,7 @@ APPEARANCE = {   # 이름: (열, 변환) — 비교량: log이면 |ln(a/b)|, 아
 
 
 def add_ht_features(df, LAB, HT, reg, S):
-    """트래킹 전에 검출마다 ROI의 HT RI 평균·최대 (×10⁴ 단위 그대로)를 붙입니다. 측정 단계와 같은 좌표 변환."""
+    """트래킹 전에 검출마다 ROI의 RI 평균·최대 (×10⁴ 단위 그대로)를 붙입니다. 측정 단계와 같은 좌표 변환."""
     from scipy import ndimage as ndi
     T = LAB.shape[0]; NH, NW = HT.shape[1:]; rec = {}
     for z in range(T):
@@ -135,12 +135,12 @@ def pattern_raw(df, A, S, det: DetectionParams, prm: TrackingParams, progress=No
 
 
 def apply_pattern(df, raw, reg, S, prm: TrackingParams) -> pd.DataFrame:
-    """원시 패턴 결과 → 패턴 위치(pat_y/x, HT 좌표)와 신뢰 가중치(pat_w), 흐름과 섞은 예측(predP_y/x)."""
+    """원시 패턴 결과 → 패턴 위치(pat_y/x, RI 좌표)와 신뢰 가중치(pat_w), 흐름과 섞은 예측(predP_y/x)."""
     T = int(df.frame.max()); ps = raw["ps"]; rs = raw["rs"]
     w = np.nan_to_num(np.where(ps >= prm.pattern_score_hi, 1.0, np.where(ps >= prm.pattern_score_lo, 0.5, 0.0)))
     use2 = (w < 1) & (np.nan_to_num(rs) >= prm.refine_min_score) if prm.pattern_refine else np.zeros(len(df), bool)
     py = np.where(use2, raw["ry"], raw["py"]); px = np.where(use2, raw["rx"], raw["px"]); w = np.where(use2, prm.refine_weight, w)
-    nxt = np.clip(df.frame.values + 1, 1, T)          # 예측 위치는 다음 프레임의 HT 좌표계
+    nxt = np.clip(df.frame.values + 1, 1, T)          # 예측 위치는 다음 프레임의 RI 좌표계
     pat_y, pat_x = fl_to_ht(py, px, nxt, reg, S)
     df = df.copy(); df["pat_score"] = ps; df["pat2_score"] = rs; df["pat_refined"] = use2
     df["pat_y"], df["pat_x"], df["pat_w"] = np.nan_to_num(pat_y), np.nan_to_num(pat_x), w
@@ -150,7 +150,7 @@ def apply_pattern(df, raw, reg, S, prm: TrackingParams) -> pd.DataFrame:
 
 
 def pattern_predictions(df, A, reg, S, det: DetectionParams, prm: TrackingParams, progress=None) -> pd.DataFrame:
-    """Cy5 패턴 매칭으로 다음 프레임 위치 예측 (pat_*, predP_y/x)."""
+    """reference 패턴 매칭으로 다음 프레임 위치 예측 (pat_*, predP_y/x)."""
     return apply_pattern(df, pattern_raw(df, A, S, det, prm, progress), reg, S, prm)
 
 
@@ -177,7 +177,7 @@ LEARN_FEATURES = ["d", "d2", "area", "cy5", "ht_max", "ht_mean", "ecc", "cell", 
 
 
 def pair_features(Aa, Bb, d, nb=None, con=None):
-    """학습 비용용 특징 행렬 (이름 → (na, nb)). d = 예측 위치와의 거리(HT px). 트래킹과 학습이 같은 함수를 씁니다."""
+    """학습 비용용 특징 행렬 (이름 → (na, nb)). d = 예측 위치와의 거리(RI px). 트래킹과 학습이 같은 함수를 씁니다."""
     def diff(col, kind, scale=1.0):
         if col not in Aa or col not in Bb: return np.zeros(d.shape)
         return np.nan_to_num(_feat_diff(Aa[col].values[:, None].astype(float), Bb[col].values[None].astype(float), kind), nan=0.0) / scale

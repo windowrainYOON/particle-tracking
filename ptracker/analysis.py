@@ -1,4 +1,4 @@
-"""6단계: 여러 데이터셋 통합, 특이 입자(I(pHrodo)/I(Cy5) 한 번 증가 후 감소·유지) 색인."""
+"""6단계: 여러 데이터셋 통합, 특이 입자(I(measure)/I(reference) 한 번 증가 후 감소·유지) 색인."""
 from __future__ import annotations
 from pathlib import Path
 import numpy as np, pandas as pd

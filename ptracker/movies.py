@@ -16,7 +16,7 @@ def _stamp(ax, text):
 
 
 def channel_movie(stack, pts, path_noext, fl_coords, S, CID, reg, dt_min, title, fps=3, colors=None, cellmask_fp=None, CS=None, progress=None):
-    """stack 위에 트랙(최근 5프레임 꼬리 + ROI 원) 표시. fl_coords=False면 HT 좌표."""
+    """stack 위에 트랙(최근 5프레임 꼬리 + ROI 원) 표시. fl_coords=False면 RI 좌표."""
     writer, ext = style.movie_writer(fps)
     T, N = stack.shape[0], stack.shape[1]; NH = CID.shape[1]; X, Y = ("x", "y") if fl_coords else ("x_ht", "y_ht"); sc = 1 if fl_coords else S
     lo, hi = np.percentile(stack[T // 2], [.5, 99.8]); colors = colors or {}
@@ -53,7 +53,7 @@ def channel_movie(stack, pts, path_noext, fl_coords, S, CID, reg, dt_min, title,
 
 
 def crop_movie(A, Bal, HT, t, S, path_noext, info="", r=None, half=32, fps=3):
-    """입자를 따라가는 Cy5 / pHrodo / HT 크롭 + 비율 곡선(현재 시점 표시)."""
+    """입자를 따라가는 reference / measure / RI 크롭 + 비율 곡선(현재 시점 표시)."""
     writer, ext = style.movie_writer(fps, 1800)
     t = t.sort_values("frame").set_index("frame"); fr = np.arange(t.index.min(), t.index.max() + 1)
     pos = t[["x_fl", "y_fl", "x_ht", "y_ht"]].reindex(fr).interpolate(); hh = max(int(half * S), 4)
@@ -69,7 +69,7 @@ def crop_movie(A, Bal, HT, t, S, path_noext, info="", r=None, half=32, fps=3):
     with writer.saving(fig, path_noext + ext, 80):
         for i, f in enumerate(fr):
             x, y, xh, yh = pos.loc[f]; det = f in t.index
-            for a, im, vmax, nm, rad, s_ in [(axs[0], cA[i], va, "Cy5", half, 1), (axs[1], cB[i], vb, "pHrodo", half, 1), (axs[2], crop(HT[f - 1], xh, yh, hh), None, "HT", hh, S)]:
+            for a, im, vmax, nm, rad, s_ in [(axs[0], cA[i], va, "reference", half, 1), (axs[1], cB[i], vb, "measure", half, 1), (axs[2], crop(HT[f - 1], xh, yh, hh), None, "RI", hh, S)]:
                 a.clear(); a.axis("off"); a.imshow(im, cmap="gray", vmin=hlo if vmax is None else 0, vmax=hhi if vmax is None else vmax)
                 rr = (t.loc[f, "radius_equiv_px"] if det else 4) * s_
                 a.add_patch(Circle((rad - .5, rad - .5), rr + 2 * s_, fill=False, ec="lime" if det else "yellow", lw=1.3, ls="-" if det else "--")); a.set_title(nm, fontsize=11)

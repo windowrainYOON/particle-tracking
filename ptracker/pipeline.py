@@ -1,6 +1,6 @@
 """분석 파이프라인 오케스트레이션.
 
-한 데이터셋 = Cy5 + pHrodo + HT 3채널. 단계(stage)마다 결과를 `<출력>/_cache/`에 저장해
+한 데이터셋 = reference + measure + RI 3채널. 단계(stage)마다 결과를 `<출력>/_cache/`에 저장해
 파라미터를 바꾼 뒤 특정 단계부터 다시 실행할 수 있습니다.
 
     detect → register → cells → track → measure → figures → movies
@@ -10,7 +10,7 @@ import json, time, pickle, threading
 from pathlib import Path
 import numpy as np, pandas as pd, tifffile
 from .config import Config
-from .io_utils import DatasetSpec, load_dataset
+from .io_utils import DatasetSpec, load_dataset, tcf_frame_times
 from . import detection, registration, cells, tracking, measurement, analysis, plots, movies
 
 STAGES = ["detect", "register", "cells", "track", "measure", "figures", "movies"]
@@ -67,7 +67,11 @@ class DatasetRunner:
         self.out.mkdir(parents=True, exist_ok=True); self.spec.save(); self.cfg.save(self.out / "config_used.yaml")
         t0 = time.time(); self.log("데이터 로드"); A, B, HT = load_dataset(self.spec)
         self.state.update(A=A, B=B, HT=HT, S=HT.shape[1] / A.shape[1])
-        self.log(f"Cy5 {A.shape}, pHrodo {B.shape}, HT {HT.shape}, 배율 {self.state['S']:.4f}")
+        self.log(f"reference {A.shape}, measure {B.shape}, RI {HT.shape}, 배율 {self.state['S']:.4f}")
+        ts = tcf_frame_times(self.spec.reference)
+        if ts and len(ts) > 1:
+            dt = float(np.median(np.diff(ts))) / 60; cur = self.cfg.channel.frame_interval_min
+            if abs(dt - cur) > 0.02 * dt: self.log(f"⚠ TCF 촬영 간격은 {dt:.2f}분인데 파라미터 프레임 간격은 {cur:g}분입니다 — [파라미터 > 채널·시간]을 확인하세요")
         for st in stages:
             self._check(); self.log(f"▶ {STAGE_LABELS[st]} 시작")
             getattr(self, f"stage_{st}")()
@@ -89,7 +93,7 @@ class DatasetRunner:
         s = self.state
         reg = registration.register(s["A"], s["B"], s["HT"], self.cfg.registration, lambda f, m: self._prog("register", f, m))
         reg.round(4).to_csv(self.out / "registration.csv", index=False); self._save("reg", reg); s["reg"] = reg
-        self.log(f"형광→HT 상관 중앙값 {reg.corr_FL_HT.median():.2f}, Cy5↔pHrodo {reg.corr_A_B.median():.2f}")
+        self.log(f"형광→RI 상관 중앙값 {reg.corr_FL_HT.median():.2f}, reference↔measure {reg.corr_A_B.median():.2f}")
 
     def stage_cells(self):
         c = self.cfg; s = self.state; HT = s["HT"]
@@ -151,10 +155,10 @@ class DatasetRunner:
         s = self.state; tr = self._get("tracks"); reg = self._get("reg"); CID = self._get("CID")
         Bal = s.get("Bal") if "Bal" in s else registration.align_b(s["B"], reg)
         d = tr[tr.group.isin(["inside", "outside", "excluded_mitotic"])]; dt = c.channel.frame_interval_min
-        jobs = [("HT_regions", s["HT"], False, d, dict(cellmask_fp=self._get("FP"), CS=self._get("CS")))]
+        jobs = [("RI_regions", s["HT"], False, d, dict(cellmask_fp=self._get("FP"), CS=self._get("CS")))]
         for g in ["inside", "outside"]:
             dg = d[d.group == g]; col = plots._track_colors(dg.track_id.unique())
-            jobs += [(f"Cy5_{g}", s["A"], True, dg, dict(colors=col)), (f"pHrodo_{g}", Bal, True, dg, dict(colors=col)), (f"HT_{g}", s["HT"], False, dg, dict(colors=col))]
+            jobs += [(f"reference_{g}", s["A"], True, dg, dict(colors=col)), (f"measure_{g}", Bal, True, dg, dict(colors=col)), (f"RI_{g}", s["HT"], False, dg, dict(colors=col))]
         for i, (nm, st, fl, pts, kw) in enumerate(jobs):
             movies.channel_movie(st, pts, str(self.out / f"movie_{nm}"), fl, s["S"], CID, reg, dt, nm, c.output.movie_fps,
                                  progress=lambda f, m, i=i: self._prog("movies", (i + f) / len(jobs), m), **kw)

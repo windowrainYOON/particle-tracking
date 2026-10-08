@@ -1,11 +1,11 @@
 """ParticleTracker 메인 창.
 
 탭 구성
-  1. 데이터·실행   : 채널 파일 입력(자동 인식), 단계 선택 실행, 진행/로그
+  1. 데이터·실행   : raw TCF 채널 할당 또는 tif 입력(자동 인식), 단계 선택 실행, 진행/로그
   2. 파라미터      : config.py 기반 자동 생성 폼, YAML 저장/불러오기
   3. 결과 보기     : 결과 폴더의 그림·영상·CSV 미리보기
   4. 통합 분석     : 여러 데이터셋 결과 합치기
-  5. 특이 입자     : I(pHrodo)/I(Cy5) 증가 후 감소 입자 색인, 곡선 보기, 크롭 영상
+  5. 특이 입자     : I(measure)/I(reference) 증가 후 감소 입자 색인, 곡선 보기, 크롭 영상
 """
 from __future__ import annotations
 import json
@@ -22,10 +22,11 @@ from matplotlib.figure import Figure
 
 from .. import __version__, style
 from ..config import Config
-from ..io_utils import DatasetSpec, auto_group_files
+from ..io_utils import DatasetSpec, auto_group_files, tcf_specs, split_source, source_label, make_source
 from ..pipeline import STAGES, STAGE_LABELS, DatasetRunner
 from ..plots import track_trace
 from .param_form import ParamForm
+from .channel_dialog import ChannelAssignDialog
 from .preview_panel import PreviewPanel
 from .track_views import TrackMapView, CropViewer, TrackExplorer, DatasetContext, TrackEditor
 from .table_model import DataFrameModel
@@ -39,7 +40,8 @@ try:
 except Exception:   # noqa: BLE001
     HAS_VIDEO = False
 
-COLS = ["이름", "Cy5 (A)", "pHrodo (B)", "HT", "출력 폴더", "상태"]
+COLS = ["이름", "measure (B)", "reference (A)", "RI", "출력 폴더", "상태"]
+SRC_COLS = {"measure": 1, "reference": 2, "ri": 3}       # 역할 → 표 열 (칸에는 짧은 이름, 실제 입력은 UserRole)
 IMG_EXT, MOV_EXT, TAB_EXT = {".png", ".jpg"}, {".mp4", ".gif"}, {".csv"}
 
 
@@ -51,7 +53,7 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         style.setup()
-        self.setWindowTitle(f"ParticleTracker {__version__} — Cy5 / pHrodo / HT 입자 분석")
+        self.setWindowTitle(f"ParticleTracker {__version__} — reference / measure / RI 입자 분석")
         self.resize(1400, 900)
         self.settings = QSettings("ParticleTracker", "ParticleTracker")
         self.cfg = Config(); self._thread = None; self._worker = None; self.rf = {}
@@ -76,7 +78,8 @@ class MainWindow(QMainWindow):
 
     def _help(self):
         QMessageBox.information(self, "사용법",
-            "1) [데이터·실행] 탭에서 tif 파일을 추가하면 파일명 키워드(Cy5/pHrodo/HT)로 자동 묶입니다.\n"
+            "1) [데이터·실행] 탭에서 [TCF 파일 추가]로 raw TCF를 고르고, 채널(CH0, CH1, RI …)을 measure / reference / RI 역할에 할당합니다.\n"
+            "   tif 파일은 [tif 파일 추가]로 고르면 파일명 키워드(pHrodo/Cy5/HT)로 measure/reference/RI에 자동 묶입니다.\n"
             "2) [파라미터] 탭에서 값을 조정합니다. 마우스를 올리면 설명이 보입니다.\n"
             "3) 실행할 단계를 고르고 [실행]. 파라미터를 바꾼 뒤에는 바뀐 단계부터만 다시 실행하면 됩니다 (캐시 사용).\n"
             "4) [결과 보기]에서 그림·영상·표를 확인합니다.\n"
@@ -86,14 +89,16 @@ class MainWindow(QMainWindow):
     def _tab_data(self):
         w = QWidget(); v = QVBoxLayout(w)
         row = QHBoxLayout()
-        for text, fn in [("tif 파일 추가 (자동 인식)", self.add_files), ("폴더에서 불러오기", self.add_folder), ("수동 추가", self.add_manual),
-                         ("선택 삭제", self.remove_rows), ("출력 루트 폴더 지정", self.set_out_root)]:
+        for text, fn in [("TCF 파일 추가 (채널 할당)", self.add_tcf), ("tif 파일 추가 (자동 인식)", self.add_files), ("폴더에서 불러오기", self.add_folder),
+                         ("수동 추가 (tif)", self.add_manual), ("채널 할당 변경", self.reassign_channels), ("선택 삭제", self.remove_rows),
+                         ("출력 루트 폴더 지정", self.set_out_root)]:
             b = QPushButton(text); b.clicked.connect(fn); row.addWidget(b)
         row.addStretch(); v.addLayout(row)
         self.tbl = QTableWidget(0, len(COLS)); self.tbl.setHorizontalHeaderLabels(COLS)
         self.tbl.horizontalHeader().setSectionResizeMode(QHeaderView.Interactive); self.tbl.horizontalHeader().setStretchLastSection(True)
         self.tbl.setSelectionBehavior(QAbstractItemView.SelectRows); self.tbl.itemSelectionChanged.connect(self._update_cache_label)
-        self.tbl.itemChanged.connect(lambda _: self._specs_changed())     # 경로를 직접 고친 경우
+        self.tbl.itemChanged.connect(lambda _: self._specs_changed())     # 이름·출력 폴더를 직접 고친 경우
+        self.tbl.cellDoubleClicked.connect(lambda r, c: c in SRC_COLS.values() and self.reassign_channels())
         v.addWidget(self.tbl, 2)
         gb = QGroupBox("실행할 단계 (앞 단계 결과는 캐시에서 불러옵니다)"); g = QHBoxLayout(gb); self.stage_cb = {}
         for s in STAGES:
@@ -114,14 +119,20 @@ class MainWindow(QMainWindow):
 
     def _specs(self, selected_only=False):
         rows = sorted({i.row() for i in self.tbl.selectedIndexes()}) if selected_only else range(self.tbl.rowCount())
-        return [DatasetSpec(*(self.tbl.item(r, c).text() for c in range(5))) for r in rows]
+        return [DatasetSpec(name=self.tbl.item(r, 0).text(), out_dir=self.tbl.item(r, 4).text(),
+                            **{role: self.tbl.item(r, c).data(Qt.UserRole) for role, c in SRC_COLS.items()}) for r in rows]
 
     def _add_spec(self, s: DatasetSpec):
         r = self.tbl.rowCount(); self.tbl.insertRow(r)
-        for c, val in enumerate([s.name, s.cy5, s.phrodo, s.ht, s.out_dir, ""]):
+        self.tbl.blockSignals(True)
+        for c, val in enumerate([s.name, s.measure, s.reference, s.ri, s.out_dir, ""]):
             it = QTableWidgetItem(val); it.setToolTip(val)
-            if c == 5: it.setFlags(it.flags() & ~Qt.ItemIsEditable)
+            if c in SRC_COLS.values():
+                it.setText(source_label(val)); it.setData(Qt.UserRole, val)
+                it.setToolTip(f"{val}\n(더블클릭: 채널 할당 변경)" if split_source(val)[1] else val)
+            if c == 5 or c in SRC_COLS.values(): it.setFlags(it.flags() & ~Qt.ItemIsEditable)
             self.tbl.setItem(r, c, it)
+        self.tbl.blockSignals(False)
         self._refresh_status(r)
 
     def _refresh_status(self, r):
@@ -132,30 +143,83 @@ class MainWindow(QMainWindow):
         return self.settings.value("out_root", "")
 
     def add_files(self):
-        files, _ = QFileDialog.getOpenFileNames(self, "tif 파일 선택 (Cy5/pHrodo/HT 여러 세트 가능)", self.settings.value("last_dir", ""), "TIFF (*.tif *.tiff)")
+        files, _ = QFileDialog.getOpenFileNames(self, "tif 파일 선택 (reference/measure/RI 여러 세트 가능)", self.settings.value("last_dir", ""), "TIFF (*.tif *.tiff)")
         if files: self._group_and_add(files)
 
     def add_folder(self):
-        d = QFileDialog.getExistingDirectory(self, "tif 폴더 선택", self.settings.value("last_dir", ""))
-        if d: self._group_and_add([str(p) for p in Path(d).glob("*.tif*")])
+        d = QFileDialog.getExistingDirectory(self, "폴더 선택 (tif 또는 TCF — TCF는 하위 폴더까지 찾음)", self.settings.value("last_dir", ""))
+        if not d: return
+        tcfs = sorted(str(p) for p in Path(d).rglob("*") if p.suffix.lower() == ".tcf" and not p.name.startswith("._"))
+        tifs = [str(p) for p in Path(d).glob("*.tif*")]
+        if tcfs: self._add_tcfs(tcfs)
+        if tifs or not tcfs: self._group_and_add(tifs, quiet=bool(tcfs))
 
-    def _group_and_add(self, files):
-        self.cfg = self.params.apply_to(self.cfg); ch = self.cfg.channel
+    def add_tcf(self):
+        files, _ = QFileDialog.getOpenFileNames(self, "raw TCF 파일 선택 (여러 개 가능)", self.settings.value("last_dir", ""), "Tomocube TCF (*.TCF *.tcf)")
+        if files: self._add_tcfs(files)
+
+    def _ask_assign(self, files):
+        """채널 할당 창. 확인하면 {역할: 채널}, 취소하면 None."""
+        self.cfg = self.params.apply_to(self.cfg)
+        try: dlg = ChannelAssignDialog(files, self.settings.value("tcf_assign", None), self.cfg.channel.frame_interval_min, self)
+        except Exception as e:   # noqa: BLE001
+            QMessageBox.warning(self, "TCF 읽기 실패", f"{Path(files[0]).name} 을(를) 읽을 수 없습니다:\n{e}"); return None
+        if not dlg.exec(): return None
+        a = dlg.assignment(); self.settings.setValue("tcf_assign", a)
+        if dlg.frame_interval():
+            self.cfg.channel.frame_interval_min = round(dlg.frame_interval(), 3); self.params.set_config(self.cfg)
+            self.log(f"프레임 간격을 TCF 촬영 간격 {self.cfg.channel.frame_interval_min:g}분으로 설정했습니다")
+        return a
+
+    def _add_tcfs(self, files):
         self.settings.setValue("last_dir", str(Path(files[0]).parent))
-        specs = auto_group_files(files, ch.cy5_keyword, ch.phrodo_keyword, ch.ht_keyword, self._out_root() or None)
+        a = self._ask_assign(files)
+        if a is None: return
+        specs, skipped = tcf_specs(files, a, self._out_root() or None)
+        for s in specs: self._add_spec(s)
+        self.log(f"TCF 데이터셋 {len(specs)}개 추가 (measure={a['measure']}, reference={a['reference']}, RI={a['ri']}): {[s.name for s in specs]}")
+        if skipped:
+            self.log("건너뛴 TCF: " + "; ".join(skipped))
+            QMessageBox.warning(self, "일부 TCF 건너뜀", "할당한 채널이 없는 파일은 추가하지 않았습니다:\n\n" + "\n".join(skipped[:15]))
+        self._refresh_combine_list(); self._specs_changed()
+
+    def reassign_channels(self):
+        rows = sorted({i.row() for i in self.tbl.selectedIndexes()})
+        rows = [r for r in rows if split_source(self.tbl.item(r, SRC_COLS["measure"]).data(Qt.UserRole))[1] is not None]
+        if not rows:
+            QMessageBox.information(self, "채널 할당 변경", "채널 할당은 TCF로 추가한 데이터셋에서 바꿀 수 있습니다. 표에서 TCF 행을 선택하세요."); return
+        files = [split_source(self.tbl.item(r, SRC_COLS["measure"]).data(Qt.UserRole))[0] for r in rows]
+        a = self._ask_assign(files)
+        if a is None: return
+        self.tbl.blockSignals(True)
+        for r, f in zip(rows, files):
+            for role, c in SRC_COLS.items():
+                src = make_source(f, a[role]); it = self.tbl.item(r, c)
+                it.setData(Qt.UserRole, src); it.setText(source_label(src)); it.setToolTip(f"{src}\n(더블클릭: 채널 할당 변경)")
+        self.tbl.blockSignals(False)
+        errs = [e for s in self._specs(True) for e in s.validate()]
+        if errs: QMessageBox.warning(self, "채널 확인", "\n".join(errs[:15]))
+        self.log(f"채널 할당 변경 ({len(rows)}개): measure={a['measure']}, reference={a['reference']}, RI={a['ri']} — 이미 실행한 결과는 처음 단계부터 다시 실행하세요")
+        self._specs_changed()
+
+    def _group_and_add(self, files, quiet=False):
+        self.cfg = self.params.apply_to(self.cfg); ch = self.cfg.channel
+        if files: self.settings.setValue("last_dir", str(Path(files[0]).parent))
+        specs = auto_group_files(files, ch.reference_keyword, ch.measure_keyword, ch.ri_keyword, self._out_root() or None)
+        if not specs and quiet: return
         if not specs:
-            QMessageBox.warning(self, "인식 실패", "Cy5 / pHrodo / HT 세트를 찾지 못했습니다.\n파일명 키워드를 [파라미터 > 채널·시간]에서 확인하거나 [수동 추가]를 쓰세요."); return
+            QMessageBox.warning(self, "인식 실패", "measure / reference / RI tif 세트를 찾지 못했습니다.\n파일명 키워드를 [파라미터 > 채널·시간]에서 확인하거나 [수동 추가]를 쓰세요.\nraw TCF는 [TCF 파일 추가]를 쓰세요."); return
         for s in specs: self._add_spec(s)
         self.log(f"데이터셋 {len(specs)}개 추가: {[s.name for s in specs]}"); self._refresh_combine_list(); self._specs_changed()
 
     def add_manual(self):
         paths = []
-        for ch in ("Cy5 (A, ROI 검출)", "pHrodo (B)", "HT"):
-            f, _ = QFileDialog.getOpenFileName(self, f"{ch} 파일", self.settings.value("last_dir", ""), "TIFF (*.tif *.tiff)")
+        for ch in ("measure (B, 측정 대상)", "reference (A, ROI 검출)", "RI"):
+            f, _ = QFileDialog.getOpenFileName(self, f"{ch} tif 파일", self.settings.value("last_dir", ""), "TIFF (*.tif *.tiff)")
             if not f: return
             paths.append(f)
-        name = Path(paths[0]).stem; root = self._out_root() or str(Path(paths[0]).parent / "ParticleTracker_results")
-        self._add_spec(DatasetSpec(name, *paths, str(Path(root) / name))); self._refresh_combine_list(); self._specs_changed()
+        name = Path(paths[1]).stem; root = self._out_root() or str(Path(paths[1]).parent / "ParticleTracker_results")
+        self._add_spec(DatasetSpec(name, reference=paths[1], measure=paths[0], ri=paths[2], out_dir=str(Path(root) / name))); self._refresh_combine_list(); self._specs_changed()
 
     def remove_rows(self):
         for r in sorted({i.row() for i in self.tbl.selectedIndexes()}, reverse=True): self.tbl.removeRow(r)
@@ -235,7 +299,7 @@ class MainWindow(QMainWindow):
         f, _ = QFileDialog.getOpenFileName(self, "프로젝트 열기", "", "JSON (*.json)")
         if not f: return
         d = json.loads(Path(f).read_text(encoding="utf-8")); self.tbl.setRowCount(0)
-        for s in d.get("datasets", []): self._add_spec(DatasetSpec(**s))
+        for s in d.get("datasets", []): self._add_spec(DatasetSpec.from_dict(s))
         self.cfg = Config.from_dict(d.get("config", {})); self.params.set_config(self.cfg); self.rf_params.set_config(self.cfg); self._refresh_combine_list(); self._refresh_result_dirs()
         self._specs_changed()
 

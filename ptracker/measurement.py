@@ -1,4 +1,4 @@
-"""5단계: 같은 ROI로 Cy5(A) / pHrodo(B) / HT 측정, 트랙 요약, 세포 안·밖·분열 분류."""
+"""5단계: 같은 ROI로 reference(A) / measure(B) / RI 측정, 트랙 요약, 세포 안·밖·분열 분류."""
 from __future__ import annotations
 import numpy as np, pandas as pd
 from scipy import ndimage as ndi
@@ -6,7 +6,7 @@ from .config import MeasurementParams
 
 
 def measure_rois(tr, A, Bal, HT, LAB, reg, S, prm: MeasurementParams, progress=None):
-    """ROI 평균 − 배경 고리 중앙값. HT는 ROI를 HT 좌표로 옮겨 평균/최대 RI."""
+    """ROI 평균 − 배경 고리 중앙값. HT는 ROI를 RI 좌표로 옮겨 평균/최대 RI."""
     T = A.shape[0]; rec = {}
     for z in range(T):
         for k, v in measure_frame(LAB[z], A[z], Bal[z], HT[z], reg.dy_ht.values[z], reg.dx_ht.values[z], S, prm).items(): rec[(z + 1, k)] = v
@@ -43,7 +43,7 @@ def measure_frame(lab, a_img, b_img, ht, dy_ht, dx_ht, S, prm: MeasurementParams
 
 
 def flag_merged(tr, prm: MeasurementParams):
-    """다른 입자와 합쳐지거나 가려진 시점 표시: 면적과 Cy5 총 밝기가 그 트랙의 직전 3시점 중앙값보다 함께 급증.
+    """다른 입자와 합쳐지거나 가려진 시점 표시: 면적과 reference 총 밝기가 그 트랙의 직전 3시점 중앙값보다 함께 급증.
     exclude_merged면 그 시점의 비율을 비웁니다 (원래 값은 ratio_BA_unfiltered)."""
     tr = tr.sort_values(["track_id", "frame"]).copy(); g = tr.groupby("track_id")
     integ = tr.area_px * tr.mean_intensity

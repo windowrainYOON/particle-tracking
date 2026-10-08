@@ -1,4 +1,4 @@
-"""1단계: Cy5(A) 채널 입자 검출 – 배경 제거 → 적응형 threshold → 씨앗 → watershed."""
+"""1단계: reference(A) 채널 입자 검출 – 배경 제거 → 적응형 threshold → 씨앗 → watershed."""
 from __future__ import annotations
 import numpy as np, pandas as pd
 from scipy import ndimage as ndi

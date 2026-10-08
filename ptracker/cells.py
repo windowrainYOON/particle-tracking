@@ -1,4 +1,4 @@
-"""3단계: HT 기반 세포 영역(세포질), 세포 ID 연결, 세포 움직임(optical flow),
+"""3단계: RI 기반 세포 영역(세포질), 세포 ID 연결, 세포 움직임(optical flow),
 퍼진 세포막 영역(footprint), 분열 세포 판정."""
 from __future__ import annotations
 import numpy as np, pandas as pd
@@ -52,7 +52,7 @@ def segment_cells(cellimg, prm: CellParams, progress=None):
 
 
 def cell_flow(cellimg, prm: CellParams, progress=None):
-    """연속 프레임 사이 세포 몸체의 이동 벡터장 (T-1, 2, H, W), 단위 HT px/프레임."""
+    """연속 프레임 사이 세포 몸체의 이동 벡터장 (T-1, 2, H, W), 단위 RI px/프레임."""
     T, NH, NW = cellimg.shape; out = np.zeros((max(T - 1, 0), 2, NH, NW), np.float32)
     for z in range(T - 1):
         a = resize(cellimg[z], (NH // 2, NW // 2)); b = resize(cellimg[z + 1], (NH // 2, NW // 2))

@@ -62,7 +62,7 @@ def measure_free(ctx, src, frame, x, y, radius, prm):
     if cache.exists(): lab = np.array(np.load(cache, mmap_mode="r")[z])
     elif (Path(ctx.folder) / "particle_labels.tif").exists():
         import tifffile; lab = tifffile.imread(Path(ctx.folder) / "particle_labels.tif", key=z)
-    a = src.frame("cy5", z); dy_b, dx_b = ctx.shift_B(frame); b = np.roll(src.frame("phrodo", z), (dy_b, dx_b), (0, 1)); ht = src.frame("ht", z)
+    a = src.frame("reference", z); dy_b, dx_b = ctx.shift_B(frame); b = np.roll(src.frame("measure", z), (dy_b, dx_b), (0, 1)); ht = src.frame("ri", z)
     if lab is None: lab = np.zeros(a.shape, np.int32)
     lab = lab.astype(np.int32); new = int(lab.max()) + 1; yy, xx = np.ogrid[:lab.shape[0], :lab.shape[1]]
     disk = ((yy - y) ** 2 + (xx - x) ** 2 <= radius ** 2) & (lab == 0); lab[disk] = new
