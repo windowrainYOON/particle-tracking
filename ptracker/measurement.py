@@ -107,3 +107,24 @@ POINT_COLUMNS = ["track_id", "group", "frame", "time_min", "label", "x", "y", "x
 def points_table(tr):
     cols = [c for c in POINT_COLUMNS if c in tr.columns]
     return tr[cols].rename(columns={"x": "x_fl", "y": "y_fl", "label": "roi_label"})
+
+
+def cell_intensity(A, Bal, CID, reg, S, dt_min, progress=None):
+    """세포 전체 밝기: RI 좌표의 세포 영역(CID)을 형광 좌표로 옮겨 세포마다 평균 reference·measure − 세포 밖 중앙값.
+    반환 열: cell_id, frame, time_min, cell_area_flpx, cell_I_A_raw, cell_I_B_raw, cell_bg_A, cell_bg_B, cell_I_A, cell_I_B, cell_ratio_BA"""
+    T, NF, NW = A.shape; NH, NHW = CID.shape[1:]; rows = []
+    yy = np.arange(NF); xx = np.arange(NW)
+    for z in range(T):
+        hy = np.clip(np.round((yy + 0.5) * S - 0.5 + reg.dy_ht.values[z]).astype(int), 0, NH - 1)
+        hx = np.clip(np.round((xx + 0.5) * S - 0.5 + reg.dx_ht.values[z]).astype(int), 0, NHW - 1)
+        lab = CID[z][np.ix_(hy, hx)]; ids = np.unique(lab); ids = ids[ids > 0]
+        a = A[z].astype(float); b = Bal[z].astype(float); bg = lab == 0
+        bga = float(np.median(a[bg])) if bg.any() else np.nan; bgb = float(np.median(b[bg])) if bg.any() else np.nan
+        if len(ids):
+            area = ndi.sum(np.ones_like(a), lab, ids); ma = ndi.mean(a, lab, ids); mb = ndi.mean(b, lab, ids)
+            rows += [(int(c), z + 1, z * dt_min, int(n), x, y, bga, bgb) for c, n, x, y in zip(ids, area, ma, mb)]
+        if progress: progress((z + 1) / T, f"세포 밝기 {z+1}/{T}")
+    C = pd.DataFrame(rows, columns=["cell_id", "frame", "time_min", "cell_area_flpx", "cell_I_A_raw", "cell_I_B_raw", "cell_bg_A", "cell_bg_B"])
+    C["cell_I_A"] = C.cell_I_A_raw - C.cell_bg_A; C["cell_I_B"] = C.cell_I_B_raw - C.cell_bg_B
+    C["cell_ratio_BA"] = np.where(C.cell_I_A > 0, C.cell_I_B / C.cell_I_A, np.nan)
+    return C

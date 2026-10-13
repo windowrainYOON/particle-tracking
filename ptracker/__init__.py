@@ -1,2 +1,2 @@
 """ParticleTracker – reference / measure / RI 입자 검출·추적·측정 분석 패키지."""
-__version__ = "1.9.0"
+__version__ = "1.10.0"

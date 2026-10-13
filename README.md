@@ -36,6 +36,7 @@ Cy5(내부 대조) · pHrodo(pH 센서) · HT(holotomography z-projection) 타�
 | **3. 결과 보기** | [파일 보기] 결과 폴더의 그림(PNG)·영상(MP4)·표(CSV) 미리보기. [트랙 탐색] 트랙 표(그룹·최소 길이로 거르기)와 전체 영상 위 경로 — 표나 경로를 클릭해 트랙을 고르면 I(reference)·I(measure)·비율·RI 그래프와 따라가는 크롭(재생/프레임 모아보기)을 봅니다. |
 | **4. 통합 분석** | 여러 데이터셋 결과를 체크해 하나로 합치고, 합산 그래프와 통합 CSV를 만듭니다. |
 | **5. 특이 입자** | 통합(또는 단일) 결과에서 I(measure)/I(reference)가 **한 번 증가 → 급격한/장기적 감소 → 낮게 유지**되는 입자를 찾습니다. 기준값을 바로 바꿔 다시 분류할 수 있고, 표에서 입자를 고르면 오른쪽에서 **곡선 / 전체 영상 위치**(목록의 입자 경로, ★ = 최고점, 클릭해 선택) / **크롭 프레임**(재생·모아보기)을 볼 수 있습니다. 크롭 영상 파일(MP4)도 만들 수 있습니다. |
+| **6. 그룹 비교** | 이미지(결과 폴더·통합 결과·CSV)를 그룹으로 묶어 입자(트랙)·세포(세포 내 입자 / 세포 전체) 단위 값의 시간 추이를 한 그래프에 그룹별 선으로 겹치고, 분포(상자그림)와 Mann-Whitney / Kruskal-Wallis 검정을 봅니다. 설정(값, 위치, 시간 칸, 정규화, 중심값·범위, 이미지 단위 집계 등)을 바꾸면 바로 다시 그리고, 그래프와 값(CSV)·설정을 함께 저장합니다. 자세한 내용은 [docs/사용방법.md](docs/사용방법.md) 8장. |
 
 ### 파라미터 미리보기
 [2. 파라미터] 탭에서 섹션을 펼치면 오른쪽에 그 단계의 결과가 표시됩니다. 값을 바꾸면 0.4초 뒤 자동으로 다시 계산해 **이전 / 현재**를 나란히 보여줍니다.
@@ -141,8 +142,9 @@ ptracker/
   registration.py  2. 정합 (좌표 변환 fl_to_ht, pHrodo 정렬 align_b)
   cells.py         3. 세포 분할/ID, optical flow, 퍼진 세포막, 분열 판정
   tracking.py      4. 예측(흐름·패턴), 비용 행렬, LAP, 이웃 일관성, gap closing
-  measurement.py   5. ROI 측정, 트랙 요약·그룹 분류
+  measurement.py   5. ROI 측정, 트랙 요약·그룹 분류, 세포 전체 밝기(cell_intensity.csv)
   analysis.py      6. 데이터셋 통합, 특이 입자 분류
+  groups.py        그룹 비교 (결과 import, 입자·세포 단위 시간 추이·분포·검정, 저장)
   plots.py         그래프 함수
   movies.py        채널 영상, 크롭 영상
   pipeline.py      단계 실행·캐시(DatasetRunner), 통합/특이 입자/크롭 작업
@@ -154,7 +156,7 @@ tools/make_icon.py 앱 아이콘 생성
   preview.py       파라미터 미리보기 계산 (프레임 단위, Qt 없음)
   cli.py           명령줄
   style.py         한글 글꼴, ffmpeg 경로
-  gui/             PySide6 GUI (main_window, param_form, preview_panel, track_views, worker, tasks, table_model)
+  gui/             PySide6 GUI (main_window, param_form, preview_panel, track_views, group_compare, worker, tasks, table_model)
 tests/             합성 데이터 end-to-end 테스트 (python tests/test_pipeline.py)
 configs/default.yaml
 ```

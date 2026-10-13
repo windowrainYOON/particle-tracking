@@ -23,6 +23,15 @@ def combine(dataset_dirs: dict) -> pd.DataFrame:
     return pd.concat(parts, ignore_index=True) if parts else pd.DataFrame()
 
 
+def combine_cells(dataset_dirs: dict) -> pd.DataFrame:
+    """{name: 결과 폴더} → 통합 세포 전체 밝기 표 (cell_intensity.csv가 있는 폴더만, dataset 열 추가)."""
+    parts = []
+    for name, d in dataset_dirs.items():
+        f = Path(d) / "cell_intensity.csv"
+        if f.exists(): t = pd.read_csv(f); t.insert(0, "dataset", name); parts.append(t)
+    return pd.concat(parts, ignore_index=True) if parts else pd.DataFrame()
+
+
 def classify_track(t0, prm: RiseFallParams, dt_min=20.0) -> dict:
     t = t0.dropna(subset=["ratio_BA"]).sort_values("frame"); x = t.ratio_BA.values; f = t.frame.values; n = len(x)
     o = dict(n_valid=n, base=np.nan, peak=np.nan, end=np.nan, peak_frame=np.nan, drop_frame=np.nan, decline_frame=np.nan,

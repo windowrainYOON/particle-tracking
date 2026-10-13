@@ -1,4 +1,9 @@
 # 변경 이력
+## 1.10.0
+- [6. 그룹 비교] 탭: 이미지들을 그룹으로 묶어 비교 (그룹 수 제한 없음). 그룹마다 데이터셋 결과 폴더, 통합 결과 폴더, 여러 결과 폴더를 담은 상위 폴더, point CSV를 import하거나 [데이터·실행] 표에서 추가.
+- 단위: 입자(트랙), 세포(세포 내 입자 — 비율 중앙값·ΣI(measure)/ΣI(reference)·평균 밝기·입자 수), 세포(세포 전체 밝기). 그룹별 시간 추이를 한 그래프에 다른 색 선(세포 안·밖 따로 보기는 실선·점선)으로, 분포는 상자그림 + Mann-Whitney U(Holm 보정)·Kruskal-Wallis.
+- 설정(값, 입자 위치, 최소 시점 수, 시간 칸, 시간 범위, 정규화, 중심값·범위, 이미지 단위 집계, 개별 선, 단위 선택)을 바꾸면 바로 다시 그림. [그래프 + 데이터 저장]으로 그림(PNG/PDF/SVG/TIFF)과 같은 이름의 summary/per_unit/per_image/unit_means/stats CSV, 설정 JSON을 함께 저장. 그룹 구성 저장·불러오기, 프로젝트 파일에도 저장.
+- 세포 전체 밝기: 측정 단계에서 세포 영역(RI)을 형광 좌표로 옮겨 세포별·프레임별 평균 reference·measure(세포 밖 중앙값 배경 제거)와 비율을 `cell_intensity.csv`로 저장, 그래프 단계에서 `cell_intensity_timecourse.png`. 통합 분석이 `combined_cell_intensity.csv`도 만듦. 예전 결과는 측정·분류 단계를 다시 실행하면 생김.
 ## 1.9.0
 - raw TCF 입력: Tomocube `.TCF`(HDF5)를 변환 없이 바로 읽음. 형광은 `Data/2DFLMIP/CHn`(없으면 3DFL의 z 최대값), RI는 `Data/2DMIP`(없으면 3D의 z 최대값). 프레임마다 uint8/uint16이 섞인 형광을 원래 단위 그대로 읽고, RI·measure 프레임은 reference 채널 촬영 시각에 가장 가까운 것을 고름. 합성 TCF에서 tif 입력과 트랙 결과가 완전히 같음.
 - 역할 이름 변경: pHrodo → **measure**, Cy5 → **reference**, HT → **RI** (화면, 그래프, 로그, 파라미터, 영상 파일 이름 `reference_*`·`measure_*`·`RI_*`). CSV 열·파일 이름(`I_A`, `I_B`, `HT_RI_*`, `*_A_B_HT.csv`)은 이전 결과와 호환되도록 유지.

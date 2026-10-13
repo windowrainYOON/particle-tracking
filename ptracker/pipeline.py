@@ -136,6 +136,9 @@ class DatasetRunner:
         TS.round(5).to_csv(self.out / "tracks_summary_A_B_HT.csv", index=False)
         measurement.points_table(tr).round(4).to_csv(self.out / "tracks_points_A_B_HT.csv", index=False)
         measurement.per_cell(tr, self._get("CID"), c.channel.frame_interval_min).round(5).to_csv(self.out / "particles_per_cell.csv", index=False)
+        CI = measurement.cell_intensity(s["A"], Bal, self._get("CID"), reg, s["S"], c.channel.frame_interval_min, lambda f, m: self._prog("measure", .8 + f * .2, m))
+        CI.round(5).to_csv(self.out / "cell_intensity.csv", index=False)
+        self.log(f"세포 전체 밝기: 세포 {CI.cell_id.nunique()}개")
         self._save("tracks", tr); s.update(tracks=tr, TS=TS)
         self.log("트랙 분류:", TS.group.value_counts().to_dict())
 
@@ -148,6 +151,7 @@ class DatasetRunner:
         plots.tracks_overlay(s["HT"], self._get("CID"), long, f"{o}/tracks_overlay.png")
         plots.regions_figure(s["HT"], self._get("CID"), self._get("FP"), self._get("CS"), f"{o}/regions_cytoplasm_spread_membrane.png")
         plots.mitosis_figure(self._get("CS"), f"{o}/mitosis_detection.png"); self._prog("figures", .9)
+        if (self.out / "cell_intensity.csv").exists(): plots.cell_timecourses(pd.read_csv(self.out / "cell_intensity.csv"), f"{o}/cell_intensity_timecourse.png")
 
     def stage_movies(self):
         c = self.cfg
@@ -170,6 +174,8 @@ def combine_and_plot(dataset_dirs: dict, out_dir, cfg: Config, log=print):
     pts = analysis.combine(dataset_dirs)
     if pts.empty: raise ValueError("통합할 결과가 없습니다 (tracks_points_A_B_HT.csv 없음)")
     pts.to_csv(out / "combined_tracks_points_A_B_HT.csv", index=False)
+    ci = analysis.combine_cells(dataset_dirs)
+    if not ci.empty: ci.to_csv(out / "combined_cell_intensity.csv", index=False)
     (out / "datasets_map.json").write_text(json.dumps({k: str(v) for k, v in dataset_dirs.items()}, ensure_ascii=False, indent=1), encoding="utf-8")
     pts.groupby(["dataset", "group"]).track_uid.nunique().unstack(fill_value=0).to_csv(out / "track_counts_by_group.csv")
     long = pts[pts.group.isin(["inside", "outside"])]

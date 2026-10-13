@@ -6,6 +6,7 @@
   3. 결과 보기     : 결과 폴더의 그림·영상·CSV 미리보기
   4. 통합 분석     : 여러 데이터셋 결과 합치기
   5. 특이 입자     : I(measure)/I(reference) 증가 후 감소 입자 색인, 곡선 보기, 크롭 영상
+  6. 그룹 비교     : 이미지들을 그룹으로 묶어 입자·세포 밝기 시간 추이와 분포 비교, 그래프·값 저장
 """
 from __future__ import annotations
 import json
@@ -27,6 +28,7 @@ from ..pipeline import STAGES, STAGE_LABELS, DatasetRunner
 from ..plots import track_trace
 from .param_form import ParamForm
 from .channel_dialog import ChannelAssignDialog
+from .group_compare import GroupCompare
 from .preview_panel import PreviewPanel
 from .track_views import TrackMapView, CropViewer, TrackExplorer, DatasetContext, TrackEditor
 from .table_model import DataFrameModel
@@ -63,6 +65,7 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self._tab_results(), "3. 결과 보기")
         self.tabs.addTab(self._tab_combine(), "4. 통합 분석")
         self.tabs.addTab(self._tab_risefall(), "5. 특이 입자")
+        self.compare = GroupCompare(self._compare_dirs); self.compare.log.connect(self.log); self.tabs.addTab(self.compare, "6. 그룹 비교")
         self._menu(); self.statusBar().showMessage("준비")
         last = self.settings.value("last_config")
         if last and Path(last).exists():
@@ -83,7 +86,8 @@ class MainWindow(QMainWindow):
             "2) [파라미터] 탭에서 값을 조정합니다. 마우스를 올리면 설명이 보입니다.\n"
             "3) 실행할 단계를 고르고 [실행]. 파라미터를 바꾼 뒤에는 바뀐 단계부터만 다시 실행하면 됩니다 (캐시 사용).\n"
             "4) [결과 보기]에서 그림·영상·표를 확인합니다.\n"
-            "5) [통합 분석]으로 여러 데이터셋을 합치고, [특이 입자]에서 증가 후 감소 입자를 찾고 크롭 영상을 만듭니다.")
+            "5) [통합 분석]으로 여러 데이터셋을 합치고, [특이 입자]에서 증가 후 감소 입자를 찾고 크롭 영상을 만듭니다.\n"
+            "6) [그룹 비교]에서 이미지(결과 폴더)들을 그룹으로 묶어 입자·세포 밝기의 시간 추이를 한 그래프에 비교하고, 그래프와 값을 저장합니다.")
 
     # ================================================================ tab 1
     def _tab_data(self):
@@ -293,7 +297,8 @@ class MainWindow(QMainWindow):
         f, _ = QFileDialog.getSaveFileName(self, "프로젝트 저장", "project.json", "JSON (*.json)")
         if not f: return
         self.cfg = self.params.apply_to(self.cfg)
-        Path(f).write_text(json.dumps(dict(datasets=[s.__dict__ for s in self._specs()], config=self.cfg.to_dict()), ensure_ascii=False, indent=1), encoding="utf-8")
+        Path(f).write_text(json.dumps(dict(datasets=[s.__dict__ for s in self._specs()], config=self.cfg.to_dict(), group_compare=self.compare.to_dict()),
+                                      ensure_ascii=False, indent=1), encoding="utf-8")
 
     def load_project(self):
         f, _ = QFileDialog.getOpenFileName(self, "프로젝트 열기", "", "JSON (*.json)")
@@ -302,6 +307,12 @@ class MainWindow(QMainWindow):
         for s in d.get("datasets", []): self._add_spec(DatasetSpec.from_dict(s))
         self.cfg = Config.from_dict(d.get("config", {})); self.params.set_config(self.cfg); self.rf_params.set_config(self.cfg); self._refresh_combine_list(); self._refresh_result_dirs()
         self._specs_changed()
+        if d.get("group_compare"): self.compare.from_dict(d["group_compare"])
+
+    def _compare_dirs(self):
+        """[그룹 비교]의 [데이터 표에서 추가]: 선택한 데이터셋(없으면 전체)의 (이름, 결과 폴더)."""
+        specs = self._specs(selected_only=True) or self._specs()
+        return [(s.name, s.out_dir) for s in specs]
 
     # ================================================================ tab 3
     def _tab_results(self):

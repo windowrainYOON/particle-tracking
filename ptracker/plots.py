@@ -117,6 +117,18 @@ def mitosis_figure(CS, path):
     axs[0].set_title("세포별 평균 굴절률 (빨간 별 = 분열 판정)"); axs[1].set_title("세포별 면적"); _save(fig, path, 85)
 
 
+def cell_timecourses(C, path):
+    """세포별 전체 밝기 시간 추이 (세포 하나 = 선 하나)."""
+    if C.empty: return
+    C = C.assign(t_h=C.time_min / 60); fig, axs = plt.subplots(1, 3, figsize=(18, 5.2))
+    for a, var, lab in [(axs[0], "cell_ratio_BA", "I(measure)/I(reference)"), (axs[1], "cell_I_B", "I(measure) (배경 제거)"), (axs[2], "cell_I_A", "I(reference) (배경 제거)")]:
+        for i, (c_, s) in enumerate(C.groupby("cell_id")):
+            if len(s) >= 3: a.plot(s.t_h, s[var], "-", lw=1, alpha=.7, color=DS_COLORS(i % 10), label=f"cell {c_}" if len(s) >= 3 else None)
+        a.set_xlabel("시간 (h)"); a.set_ylabel(lab); a.set_title(f"세포 전체 {lab}"); a.grid(alpha=.3)
+    if C.cell_id.nunique() <= 20: axs[0].legend(fontsize=7, ncol=2)
+    _save(fig, path, 90)
+
+
 # ---------------------------------------------------------------- 특이 입자
 def risefall_fraction(F, path):
     ds = list(F.dataset.unique()); x = np.arange(len(ds)); w = .2; fig, ax = plt.subplots(figsize=(max(8, 2.5 * len(ds)), 5.8))
