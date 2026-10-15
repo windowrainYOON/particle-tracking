@@ -7,6 +7,7 @@ import matplotlib.pyplot as plt
 from matplotlib.patches import Circle
 from matplotlib.collections import PatchCollection, LineCollection
 from .plots import track_trace, CNAME, GNAME, _disp
+from .lut import auto_rgb
 
 GCOL = {"inside": "lime", "outside": "red", "excluded_mitotic": "yellow"}
 
@@ -15,21 +16,24 @@ def _stamp(ax, text):
     ax.text(.01, .985, text, transform=ax.transAxes, va="top", color="yellow", fontsize=11, bbox=dict(fc="black", alpha=.6, ec="none"))
 
 
-def channel_movie(stack, pts, path_noext, fl_coords, S, CID, reg, dt_min, title, fps=3, colors=None, cellmask_fp=None, CS=None, progress=None):
-    """stack 위에 트랙(최근 5프레임 꼬리 + ROI 원) 표시. fl_coords=False면 RI 좌표."""
+def channel_movie(stack, pts, path_noext, fl_coords, S, CID, reg, dt_min, title, fps=3, colors=None, cellmask_fp=None, CS=None, progress=None, lut=None):
+    """stack 위에 트랙(최근 5프레임 꼬리 + ROI 원) 표시. fl_coords=False면 RI 좌표.
+    lut: lut.ChannelLUT (LUT 프리셋) — 없으면 가운데 프레임의 0.5–99.8% 범위 회색."""
     writer, ext = style.movie_writer(fps)
     T, N = stack.shape[0], stack.shape[1]; NH = CID.shape[1]; X, Y = ("x", "y") if fl_coords else ("x_ht", "y_ht"); sc = 1 if fl_coords else S
-    lo, hi = np.percentile(stack[T // 2], [.5, 99.8]); colors = colors or {}
+    if lut is None: lo, hi = np.percentile(stack[T // 2], [.5, 99.8])
+    show = lut.rgb if lut is not None else (lambda im: auto_rgb(im, lo, hi))
+    colors = colors or {}
     fig = plt.figure(figsize=(9, 9), dpi=100); ax = fig.add_axes([0, 0, 1, 1])
     alive = pts.groupby("frame").track_id.apply(set).to_dict()
     with writer.saving(fig, path_noext + ext, dpi=100):
         for f in range(1, T + 1):
             ax.clear(); ax.axis("off")
             if cellmask_fp is not None and not fl_coords:
-                ov = np.dstack([np.clip((stack[f - 1].astype(float) - lo) / max(hi - lo, 1e-9), 0, 1)] * 3)
+                ov = show(stack[f - 1])
                 sm = cellmask_fp[f - 1] & (CID[f - 1] == 0); ov[sm] = ov[sm] * .5 + np.array([.1, .55, 1]) * .5; ax.imshow(ov)
             else:
-                ax.imshow(stack[f - 1], cmap="gray", vmin=lo, vmax=hi)
+                ax.imshow(show(stack[f - 1]))
             if fl_coords:
                 xs = (np.arange(NH) - reg.dx_ht.values[f - 1] + .5) / S - .5; ys = (np.arange(NH) - reg.dy_ht.values[f - 1] + .5) / S - .5
                 ax.contour(xs, ys, CID[f - 1] > 0, [.5], colors="w", linewidths=.5)
@@ -52,8 +56,9 @@ def channel_movie(stack, pts, path_noext, fl_coords, S, CID, reg, dt_min, title,
     return path_noext + ext
 
 
-def crop_movie(A, Bal, HT, t, S, path_noext, info="", r=None, half=32, fps=3):
-    """입자를 따라가는 reference / measure / RI 크롭 + 비율 곡선(현재 시점 표시)."""
+def crop_movie(A, Bal, HT, t, S, path_noext, info="", r=None, half=32, fps=3, luts=None):
+    """입자를 따라가는 reference / measure / RI 크롭 + 비율 곡선(현재 시점 표시).
+    luts: {역할: lut.ChannelLUT} (LUT 프리셋) — 없는 역할은 자동 범위 회색."""
     writer, ext = style.movie_writer(fps, 1800)
     t = t.sort_values("frame").set_index("frame"); fr = np.arange(t.index.min(), t.index.max() + 1)
     pos = t[["x_fl", "y_fl", "x_ht", "y_ht"]].reindex(fr).interpolate(); hh = max(int(half * S), 4)
@@ -62,15 +67,18 @@ def crop_movie(A, Bal, HT, t, S, path_noext, info="", r=None, half=32, fps=3):
     def crop(im, x, y, h):
         xi, yi = int(round(x)), int(round(y)); p = np.pad(im, h); return p[yi:yi + 2 * h, xi:xi + 2 * h]
     cA = [crop(A[f - 1], *pos.loc[f, ["x_fl", "y_fl"]], half) for f in fr]; cB = [crop(Bal[f - 1], *pos.loc[f, ["x_fl", "y_fl"]], half) for f in fr]
-    va = np.percentile(np.stack(cA), 99.8); vb = max(np.percentile(np.stack(cB), 99.8), 3)
+    va = np.percentile(np.stack(cA), 99.8); vb = max(np.percentile(np.stack(cB), 99.8), 3); luts = luts or {}
+    show = {"reference": (lambda im: auto_rgb(im, 0, va)), "measure": (lambda im: auto_rgb(im, 0, vb)), "RI": (lambda im: auto_rgb(im, hlo, hhi))}
+    for role, nm in (("reference", "reference"), ("measure", "measure"), ("ri", "RI")):
+        if role in luts: show[nm] = luts[role].rgb
     fig = plt.figure(figsize=(10, 7.4), dpi=80); axs = [fig.add_axes([.02 + i * .33, .42, .3, .5]) for i in range(3)]; ax = fig.add_axes([.08, .07, .86, .28])
     tt = t.reset_index(); dt_h = (tt.time_min.diff() / tt.frame.diff()).median() / 60 if len(tt) > 1 else 1 / 3
     track_trace(ax, tt, r); vl = ax.axvline((fr[0] - 1) * dt_h, color="k", lw=1.5)
     with writer.saving(fig, path_noext + ext, 80):
         for i, f in enumerate(fr):
             x, y, xh, yh = pos.loc[f]; det = f in t.index
-            for a, im, vmax, nm, rad, s_ in [(axs[0], cA[i], va, "reference", half, 1), (axs[1], cB[i], vb, "measure", half, 1), (axs[2], crop(HT[f - 1], xh, yh, hh), None, "RI", hh, S)]:
-                a.clear(); a.axis("off"); a.imshow(im, cmap="gray", vmin=hlo if vmax is None else 0, vmax=hhi if vmax is None else vmax)
+            for a, im, nm, rad, s_ in [(axs[0], cA[i], "reference", half, 1), (axs[1], cB[i], "measure", half, 1), (axs[2], crop(HT[f - 1], xh, yh, hh), "RI", hh, S)]:
+                a.clear(); a.axis("off"); a.imshow(show[nm](im))
                 rr = (t.loc[f, "radius_equiv_px"] if det else 4) * s_
                 a.add_patch(Circle((rad - .5, rad - .5), rr + 2 * s_, fill=False, ec="lime" if det else "yellow", lw=1.3, ls="-" if det else "--")); a.set_title(nm, fontsize=11)
             vl.set_xdata([(f - 1) * dt_h] * 2); reg_ = t.loc[f, "region"] if (det and "region" in t) else "-"

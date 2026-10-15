@@ -11,7 +11,7 @@ from pathlib import Path
 import numpy as np, pandas as pd, tifffile
 from .config import Config
 from .io_utils import DatasetSpec, load_dataset, tcf_frame_times
-from . import detection, registration, cells, tracking, measurement, analysis, plots, movies
+from . import detection, registration, cells, tracking, measurement, analysis, plots, movies, lut
 
 STAGES = ["detect", "register", "cells", "track", "measure", "figures", "movies"]
 STAGE_LABELS = {"detect": "입자 검출", "register": "정합", "cells": "세포·영역·분열", "track": "트래킹",
@@ -163,9 +163,17 @@ class DatasetRunner:
         for g in ["inside", "outside"]:
             dg = d[d.group == g]; col = plots._track_colors(dg.track_id.unique())
             jobs += [(f"reference_{g}", s["A"], True, dg, dict(colors=col)), (f"measure_{g}", Bal, True, dg, dict(colors=col)), (f"RI_{g}", s["HT"], False, dg, dict(colors=col))]
+        luts = self._luts(dict(reference=s["A"], measure=Bal, ri=s["HT"]))
         for i, (nm, st, fl, pts, kw) in enumerate(jobs):
             movies.channel_movie(st, pts, str(self.out / f"movie_{nm}"), fl, s["S"], CID, reg, dt, nm, c.output.movie_fps,
-                                 progress=lambda f, m, i=i: self._prog("movies", (i + f) / len(jobs), m), **kw)
+                                 progress=lambda f, m, i=i: self._prog("movies", (i + f) / len(jobs), m), lut=luts.get(nm.split("_")[0].lower()), **kw)
+        if c.output.lut_preset.strip(): self.log("LUT 프리셋 저장:", lut.save_with_outputs(c.output.lut_preset.strip(), self.out, luts))
+
+    def _luts(self, data):
+        f = self.cfg.output.lut_preset.strip()
+        if not f: return {}
+        if not Path(f).is_file(): raise FileNotFoundError(f"LUT 프리셋 파일이 없습니다: {f}")
+        return lut.role_luts(f, self.spec.sources(), data, self.log)
 
 
 # ======================================================================= project-level
@@ -205,7 +213,7 @@ def run_risefall(pts: pd.DataFrame, cfg: Config, out_dir, log=print, dirs=None):
     return R, F
 
 
-def make_crop(track_uid: str, pts: pd.DataFrame, R: pd.DataFrame | None, dataset_dirs: dict, cfg: Config, out_dir, trace_png=True):
+def make_crop(track_uid: str, pts: pd.DataFrame, R: pd.DataFrame | None, dataset_dirs: dict, cfg: Config, out_dir, trace_png=True, log=print):
     """선택한 트랙의 크롭 영상 + 곡선 그래프. dataset_dirs: {dataset: 결과 폴더(dataset.json 포함)}"""
     import matplotlib.pyplot as plt
     ds, _ = track_uid.split("::", 1) if "::" in track_uid else (pts.dataset.iloc[0], track_uid)
@@ -216,7 +224,12 @@ def make_crop(track_uid: str, pts: pd.DataFrame, R: pd.DataFrame | None, dataset
     out = Path(out_dir); out.mkdir(parents=True, exist_ok=True); safe = track_uid.replace("::", "_").replace("/", "_")
     cat = plots.CNAME.get(getattr(r, "category", ""), "") if r is not None else ""
     info = f"{ds} | {track_uid.split('::')[-1]} | {plots.GNAME.get(t.group.iloc[0], t.group.iloc[0])} {cat}"
-    mv = movies.crop_movie(A, Bal, HT, t, HT.shape[1] / A.shape[1], str(out / f"crop_{safe}"), info, r, cfg.output.crop_half, cfg.output.movie_fps)
+    lp = cfg.output.lut_preset.strip(); luts = {}
+    if lp:
+        if not Path(lp).is_file(): raise FileNotFoundError(f"LUT 프리셋 파일이 없습니다: {lp}")
+        luts = lut.role_luts(lp, spec.sources(), dict(reference=A, measure=Bal, ri=HT), log)
+    mv = movies.crop_movie(A, Bal, HT, t, HT.shape[1] / A.shape[1], str(out / f"crop_{safe}"), info, r, cfg.output.crop_half, cfg.output.movie_fps, luts)
+    if lp: lut.save_with_outputs(lp, out, luts)
     if trace_png:
         fig, ax = plt.subplots(figsize=(9, 4)); plots.track_trace(ax, t, r, show_channels=True); ax.set_title(info); fig.savefig(out / f"trace_{safe}.png", dpi=110, bbox_inches="tight"); plt.close(fig)
     return mv

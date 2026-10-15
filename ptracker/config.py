@@ -140,6 +140,8 @@ class RiseFallParams:
 class OutputParams:
     make_movies: bool = p(True, "채널별 영상 생성", "")
     movie_fps: int = p(3, "영상 fps", "", min=1, max=30)
+    lut_preset: str = p("", "LUT 프리셋 (Cytosol Viewer JSON)",
+                        "저장하는 영상(채널별·크롭)의 표시 범위·색. 비우면 자동 범위 회색. 측정은 언제나 raw 값. 쓰면 출력 폴더에 프리셋 파일을 함께 저장")
     make_figures: bool = p(True, "그래프 생성", "")
     keep_cache: bool = p(True, "중간 결과(캐시) 보관", "파라미터를 바꾼 뒤 특정 단계부터 다시 돌릴 때 필요")
     crop_half: int = p(32, "크롭 반폭 (형광 px)", "", min=8, max=200)

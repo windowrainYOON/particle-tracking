@@ -67,6 +67,7 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self._tab_risefall(), "5. 특이 입자")
         self.compare = GroupCompare(self._compare_dirs); self.compare.log.connect(self.log); self.tabs.addTab(self.compare, "6. 그룹 비교")
         self._menu(); self.statusBar().showMessage("준비")
+        self.params._widgets[("output", "lut_preset")].textChanged.connect(lambda _: self._update_lut_label()); self._update_lut_label()
         last = self.settings.value("last_config")
         if last and Path(last).exists():
             try: self.cfg = Config.load(last); self.params.set_config(self.cfg); self.rf_params.set_config(self.cfg)
@@ -110,6 +111,11 @@ class MainWindow(QMainWindow):
         b = QPushButton("모두"); b.clicked.connect(lambda: [c.setChecked(True) for c in self.stage_cb.values()]); g.addWidget(b)
         b = QPushButton("그래프·영상만"); b.clicked.connect(lambda: [c.setChecked(s in ("figures", "movies")) for s, c in self.stage_cb.items()]); g.addWidget(b)
         g.addStretch(); v.addWidget(gb)
+        row = QHBoxLayout(); row.addWidget(QLabel("영상 LUT 프리셋:"))
+        self.lut_lbl = QLabel(""); self.lut_lbl.setToolTip("Cytosol Viewer에서 저장한 LUT 프리셋(JSON)으로 영상의 표시 범위·색을 정합니다. 측정은 raw 값 그대로입니다.")
+        row.addWidget(self.lut_lbl, 1)
+        b = QPushButton("선택…"); b.clicked.connect(self.pick_lut); row.addWidget(b)
+        b = QPushButton("지우기"); b.clicked.connect(lambda: self._set_lut("")); row.addWidget(b); v.addLayout(row)
         self.cache_lbl = QLabel("캐시: -"); v.addWidget(self.cache_lbl)
         row = QHBoxLayout()
         self.btn_run_all = QPushButton("▶ 전체 데이터셋 실행"); self.btn_run_all.clicked.connect(lambda: self.run_datasets(False))
@@ -271,6 +277,23 @@ class MainWindow(QMainWindow):
         self.params.changed.connect(lambda sec: self.preview.request())
         self.params.sectionChanged.connect(self.preview.set_section); self.preview.set_section(self.params.current_section())
         return w
+
+    def pick_lut(self):
+        f, _ = QFileDialog.getOpenFileName(self, "LUT 프리셋 (Cytosol Viewer)", self.settings.value("last_lut_dir", ""), "LUT 프리셋 (*.json)")
+        if not f: return
+        try: from ..lut import load_preset; names = list(load_preset(f))
+        except Exception as e: QMessageBox.warning(self, "LUT 프리셋", f"읽을 수 없습니다: {e}"); return   # noqa: BLE001
+        self.settings.setValue("last_lut_dir", str(Path(f).parent)); self._set_lut(f)
+        self.log(f"LUT 프리셋: {f} (채널 {', '.join(names)}) — 영상 단계부터 다시 실행하면 반영됩니다")
+
+    def _set_lut(self, path):
+        w = self.params._widgets.get(("output", "lut_preset"))
+        if w is not None and w.text() != path: w.setText(path)
+        self.cfg = self.params.apply_to(self.cfg); self._update_lut_label()
+
+    def _update_lut_label(self):
+        f = self.params._widgets[("output", "lut_preset")].text().strip()
+        self.lut_lbl.setText(f if f else "없음 (자동 범위 회색)")
 
     def _apply_learned(self, path):
         self.params._widgets[("tracking", "learned_model")].setText(path); self.cfg = self.params.apply_to(self.cfg)

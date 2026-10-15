@@ -55,7 +55,7 @@ def crops(uids, pts, R, dirs, cfg, out_dir, worker):
         if worker.cancel_event.is_set(): break
         worker.progress.emit(int(i / max(len(uids), 1) * 100), f"크롭 {i+1}/{len(uids)}: {u}")
         try:
-            mv = make_crop(u, pts, R, dirs, cfg, out_dir); worker.log.emit(f"크롭 저장: {mv}")
+            mv = make_crop(u, pts, R, dirs, cfg, out_dir, log=worker.log.emit if i == 0 else (lambda *a: None)); worker.log.emit(f"크롭 저장: {mv}")
         except Exception as e:   # noqa: BLE001
             worker.log.emit(f"크롭 실패 {u}: {e}")
     worker.progress.emit(100, "크롭 완료")
